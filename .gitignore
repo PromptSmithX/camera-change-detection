@@ -1,0 +1,50 @@
+# Dataset and media
+data/
+*.mp4
+*.avi
+*.mpg
+*.mpeg
+*.mov
+*.mkv
+
+# Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache and generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging
+*.egg-info/
+build/
+dist/
+
+# ML artifacts
+runs/
+checkpoints/
+weights/
+models/
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

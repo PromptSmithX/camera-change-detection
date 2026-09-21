@@ -1,0 +1,69 @@
+"""Run event-level evaluation on canonical JSON records.
+
+The input files may be either arrays of event objects or objects containing an
+``events`` array.  A root ``video_id`` is copied into each event when present.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from change_detection.dataset.io import write_json
+from change_detection.evaluation.evaluator import EvaluationConfig, evaluate_events
+
+
+def _load_events(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if isinstance(value, list):
+        return [dict(item) for item in value]
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain a JSON object or event array")
+    if isinstance(value.get("events"), list):
+        return [dict(item) for item in value["events"]]
+    if isinstance(value.get("predictions"), list):
+        return [dict(item) for item in value["predictions"]]
+    raise ValueError(f"{path} must contain an events or predictions array")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ground-truth", type=Path, required=True)
+    parser.add_argument("--predictions", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--start-tolerance", type=float, default=3.0)
+    parser.add_argument("--min-overlap", type=float, default=0.1)
+    parser.add_argument("--forgotten-iou", type=float, default=0.3)
+    parser.add_argument("--moved-iou", type=float, default=0.3)
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    ground_truth = _load_events(args.ground_truth)
+    predictions = _load_events(args.predictions)
+    result = evaluate_events(
+        ground_truth,
+        predictions,
+        config=EvaluationConfig(
+            start_tolerance_seconds=args.start_tolerance,
+            min_temporal_overlap=args.min_overlap,
+            forgotten_iou_threshold=args.forgotten_iou,
+            moved_iou_threshold=args.moved_iou,
+        ),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.output:
+        write_json(args.output, result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

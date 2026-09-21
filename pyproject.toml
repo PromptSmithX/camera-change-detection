@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "change-detection-v2"
+version = "0.1.0"
+description = "Dataset contracts and event-level evaluation foundation for fixed-camera change detection."
+requires-python = ">=3.13"
+dependencies = [
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+review = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "Pillow>=10.0",
+  "opencv-python>=4.10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

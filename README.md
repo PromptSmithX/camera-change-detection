@@ -1,0 +1,81 @@
+# Change Detection System V2 — Documentation Index
+
+Bộ tài liệu này là source of truth cho việc xây lại hệ thống phát hiện thay đổi trên camera cố định.
+
+## Mục tiêu hệ thống
+
+Hệ thống nhận video file hoặc webcam/camera cố định, cho phép chọn ROI, hiệu chuẩn baseline và phát hiện hai loại sự kiện chính:
+
+- `FORGOTTEN_OBJECT`: vật thể mới xuất hiện trong ROI và tồn tại ổn định đủ lâu.
+- `MOVED_OBJECT`: vật thể thuộc baseline bị di chuyển khỏi vị trí ban đầu sang vị trí mới.
+
+Hệ thống phải chịu được các tình huống phổ biến như thay đổi ánh sáng, người che khuất, tracker dropout, đổi track ID và nhiễu nhỏ gần biên ROI.
+
+## Tài liệu
+
+| File | Nội dung |
+|---|---|
+| [PRD.md](./PRD.md) | Product requirements, scope, KPI, user flow, acceptance criteria |
+| [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) | Kiến trúc tổng thể, module, data flow, interfaces |
+| [EVENT_SPEC.md](./EVENT_SPEC.md) | Định nghĩa FORGOTTEN_OBJECT, MOVED_OBJECT, FSM và lifecycle |
+| [DATASET_ANNOTATION_SPEC.md](./DATASET_ANNOTATION_SPEC.md) | Chuẩn dataset, annotation, split train/val/test |
+| [EVALUATION_SPEC.md](./EVALUATION_SPEC.md) | Cách tính TP/FP/FN, Precision/Recall/F1, event matching |
+| [REPO_STRUCTURE.md](./REPO_STRUCTURE.md) | Cấu trúc source code, dependency boundaries, conventions |
+| [TEST_PLAN.md](./TEST_PLAN.md) | Test strategy, unit/integration/scenario/performance tests |
+| [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Roadmap theo milestone từ M0 đến M7 |
+| [DECISIONS.md](./DECISIONS.md) | Architectural decisions và nguyên tắc không được phá vỡ |
+
+## Nguyên tắc cốt lõi
+
+1. `object_id` của hệ thống **không phải** `tracker_id`.
+2. Event được xác nhận bằng temporal logic theo **giây**, không hardcode theo frame.
+3. Model chỉ là adapter/plugin; business logic không phụ thuộc trực tiếp Ultralytics/PyTorch/OpenCV.
+4. Evaluator và dataset contract được xây trước khi tuning model.
+5. Test set phải được khóa; không tuning threshold/model trên test set.
+6. Mỗi experiment chỉ thay đổi một nhóm biến chính để có thể attribution improvement.
+
+## Baseline hiện tại
+
+Kết quả hệ thống cũ được dùng làm baseline ban đầu:
+
+- Precision: `0.4444`
+- Recall: `0.2667`
+- F1: `0.3333`
+- TP / FP / FN / TN: `4 / 5 / 11 / 7`
+- F1 FORGOTTEN_OBJECT: `0.3810`
+- F1 MOVED_OBJECT: `0.0`
+
+Mục tiêu MVP ban đầu: xây được pipeline V2 có evaluation reproducible, sau đó cải thiện dần đến KPI nghiệm thu được chốt bởi team.
+
+## M0 implementation quickstart
+
+The canonical, non-destructive benchmark draft is generated under
+`data/benchmark/v1/`; the original `data/processed/` files are not overwritten.
+
+```text
+python tools/migrate_dataset.py
+python tools/validate_dataset.py --manifest data/benchmark/v1/manifest.json --root . --mode draft --strict-hashes
+python tools/qa_report.py --manifest data/benchmark/v1/manifest.json --root .
+python -m pytest
+python tools/annotate.py --manifest data/benchmark/v1/manifest.json --root .
+```
+
+Use the validation split while reviewing and tuning. The annotation tool writes
+drafts to `data/benchmark/v1/reviews/` and never loads predictions. After all
+46 samples and 35 events are reviewed and official validation is clean, create the
+read-only test artifacts with:
+
+First materialize the review drafts as a new version (this leaves the current
+draft untouched):
+
+```text
+python tools/apply_reviews.py --manifest data/benchmark/v1/manifest.json --reviews-dir data/benchmark/v1/reviews --output-dir data/benchmark/v1/reviewed --dataset-version 1.0.1-reviewed --root .
+python tools/validate_dataset.py --manifest data/benchmark/v1/reviewed/manifest.json --root . --mode official --strict-hashes
+```
+
+```text
+python tools/lock_test.py --manifest data/benchmark/v1/reviewed/manifest.json --root . --dataset-version 1.0.2-locked
+```
+
+`lock_test.py` fails closed while any sample/event is provisional, excluded,
+incomplete, or has unresolved validator warnings.
