@@ -72,21 +72,22 @@ src/.../evaluation/
 
 ## Tasks
 
-- [ ] `FrameSource` protocol.
-- [ ] `VideoSource`.
-- [ ] `WebcamSource`.
-- [ ] ROI model + clipping.
-- [ ] Scene stability measurement.
-- [ ] Calibration frame collection.
-- [ ] Reference scene creation.
-- [ ] `SceneBaseline` persistence.
+- [x] `FrameSource` protocol.
+- [x] `VideoSource`.
+- [x] `ImageSequenceSource` for the canonical benchmark media type.
+- [x] `WebcamSource`.
+- [x] ROI model + clipping.
+- [x] Scene stability measurement.
+- [x] Calibration frame collection.
+- [x] Reference scene creation.
+- [x] `SceneBaseline` persistence.
 
 ## Exit criteria
 
-- [ ] Video đọc được frame/timestamp đúng.
-- [ ] ROI hoạt động.
-- [ ] Scene moving → calibration fail.
-- [ ] Scene stable → baseline được save/load.
+- [x] Video/image sequence đọc được frame/timestamp đúng; webcam có monotonic timestamps.
+- [x] ROI hoạt động với BBox typed format và legacy ROI JSON.
+- [x] Scene moving → calibration fail.
+- [x] Scene stable → baseline được save/load với checksum.
 
 ---
 
@@ -315,3 +316,13 @@ Dataset gate passed:
 - Lock artifacts: `data/benchmark/v2/locked_test.json`, `data/benchmark/v2/manifest.locked.json`.
 
 M1 (Source, ROI & Calibration) may now begin.
+
+## M1 implementation status (2026-09-22) — COMPLETED
+
+M1 runtime foundations are implemented:
+
+- `VideoSource`, `ImageSequenceSource`, and `WebcamSource` share the `FrameSource` contract.
+- BBox ROI clipping supports typed M1 records and existing benchmark ROI files.
+- Scene stability, deterministic calibration, and `SceneBaseline` persistence are covered by tests.
+- Baseline artifacts are written under `runs/`; benchmark and locked-test files remain untouched.
+- Detector, tracker, encoder, and baseline object recognition remain scoped to M2.

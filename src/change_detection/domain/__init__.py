@@ -10,6 +10,7 @@ from .contracts import (
     Split,
     can_transition_quality,
 )
+from .frames import FrameContext, SourceMetadata
 
 __all__ = [
     "AnnotationStatus",
@@ -20,4 +21,6 @@ __all__ = [
     "SampleAnnotation",
     "Split",
     "can_transition_quality",
+    "FrameContext",
+    "SourceMetadata",
 ]

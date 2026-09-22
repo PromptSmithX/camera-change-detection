@@ -79,3 +79,16 @@ python tools/lock_test.py --manifest data/benchmark/v1/reviewed/manifest.json --
 
 `lock_test.py` fails closed while any sample/event is provisional, excluded,
 incomplete, or has unresolved validator warnings.
+
+## M1 calibration quickstart
+
+M1 supports video files, image sequences, and webcams through the same source
+contract. Configuration is currently JSON or TOML. The example below uses a
+validation image sequence and writes only to `runs/`:
+
+```text
+python tools/calibrate.py --config configs/m1.example.json --output runs/m1-example/baseline
+```
+
+M1 creates a scene reference and stability summary. Object detection and
+baseline object embeddings are intentionally part of M2.

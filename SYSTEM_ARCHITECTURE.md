@@ -411,4 +411,8 @@ Các extension dự kiến:
 - RTSP source;
 - multi-camera orchestration.
 
+M1 implementation scope: calibration persists the reference scene and an
+empty `baseline_objects` collection. Detector and encoder integration, which
+will populate baseline objects, starts in M2.
+
 Không extension nào được thay đổi event semantics nếu product requirements không đổi.

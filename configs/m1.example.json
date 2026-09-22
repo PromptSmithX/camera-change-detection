@@ -1,0 +1,24 @@
+{
+  "source": {
+    "type": "image_sequence",
+    "path": "data/raw/cdnet 2014/intermittentObjectMotion/abandonedBox/input",
+    "source_id": "cdnet2014_abandonedbox",
+    "frame_pattern": "in*.jpg",
+    "fps": 25.0
+  },
+  "roi": {
+    "type": "bbox",
+    "path": "data/benchmark/v2/roi/cdnet2014_abandonedbox.json"
+  },
+  "calibration": {
+    "sample_count": 10,
+    "sample_interval_seconds": 0.2,
+    "start_frame": 280
+  },
+  "stability": {
+    "resize_width": 160,
+    "resize_height": 90,
+    "max_change_ratio": 0.02,
+    "required_stable_fraction": 0.9
+  }
+}
