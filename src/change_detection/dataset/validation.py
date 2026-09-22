@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from change_detection.domain import AnnotationStatus, BBox, EventType, SampleAnnotation, Split
+from change_detection.domain import AnnotationStatus, BBox, EventType, MovementOutcome, SampleAnnotation, Split
 
 from .io import read_json, resolve_repo_path, sha256_file
 
@@ -415,12 +415,32 @@ def validate_manifest(
                         )
             if event.event_type == EventType.FORGOTTEN_OBJECT and event.bbox is None:
                 _issue(issues, "error", "missing_forgotten_bbox", "FORGOTTEN_OBJECT requires bbox at confirmation", sample_id=sample_id, event_id=event.event_id)
+            if event.event_type == EventType.FORGOTTEN_OBJECT and event.movement_outcome is not None:
+                _issue(
+                    issues,
+                    "error",
+                    "unexpected_movement_outcome",
+                    "FORGOTTEN_OBJECT must not define movement_outcome",
+                    sample_id=sample_id,
+                    event_id=event.event_id,
+                )
             if event.event_type == EventType.MOVED_OBJECT:
                 severity = _event_error_or_warning(mode, status)
                 if event.baseline_bbox is None:
                     _issue(issues, severity, "missing_baseline_bbox", "MOVED_OBJECT requires baseline_bbox", sample_id=sample_id, event_id=event.event_id)
-                if event.new_bbox is None:
-                    _issue(issues, severity, "missing_new_bbox", "MOVED_OBJECT requires new_bbox", sample_id=sample_id, event_id=event.event_id)
+                if event.movement_outcome is None:
+                    _issue(
+                        issues,
+                        severity,
+                        "missing_movement_outcome",
+                        "MOVED_OBJECT requires movement_outcome (relocated or left_scene)",
+                        sample_id=sample_id,
+                        event_id=event.event_id,
+                    )
+                elif event.movement_outcome == MovementOutcome.RELOCATED and event.new_bbox is None:
+                    _issue(issues, severity, "missing_new_bbox", "Relocated MOVED_OBJECT requires new_bbox", sample_id=sample_id, event_id=event.event_id)
+                elif event.movement_outcome == MovementOutcome.LEFT_SCENE and event.new_bbox is not None:
+                    _issue(issues, severity, "unexpected_new_bbox", "left_scene MOVED_OBJECT must not define new_bbox", sample_id=sample_id, event_id=event.event_id)
             if event.start_frame is not None and not (0 <= event.start_frame < sample.frame_count):
                 _issue(issues, "error", "invalid_start_frame", "start_frame outside media", sample_id=sample_id, event_id=event.event_id)
             if event.confirmation_frame is not None and not (0 <= event.confirmation_frame < sample.frame_count):

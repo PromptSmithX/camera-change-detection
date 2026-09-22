@@ -48,3 +48,6 @@ models/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Temporary & scratch files
+scratch/

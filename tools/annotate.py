@@ -170,6 +170,7 @@ HTML = r"""
     <div class="row"><div><label>Reference start frame</label><input id="referenceStart" type="number" min="0" /></div><div><label>Reference end frame</label><input id="referenceEnd" type="number" min="0" /></div></div>
     <label>Event</label><select id="event"></select>
     <div class="row"><div><label>Type</label><select id="type"><option>FORGOTTEN_OBJECT</option><option>MOVED_OBJECT</option></select></div><div><label>Quality</label><select id="quality"><option>provisional</option><option>verified</option><option>excluded</option></select></div></div>
+    <label>Movement outcome (MOVED_OBJECT only)</label><select id="movementOutcome"><option value="">Select outcome</option><option value="relocated">relocated — stable new location</option><option value="left_scene">left_scene — carried/driven out of view</option></select>
     <div class="row"><div><label>Object ID</label><input id="objectId" /></div><div><label>Object class</label><input id="objectClass" /></div></div>
     <div class="row"><div><label>Start time (sec)</label><input id="startTime" type="number" step="0.001" /></div><div><label>Confirmation time (sec)</label><input id="confirmationTime" type="number" step="0.001" /></div></div>
     <div class="row"><div><label>End time (sec)</label><input id="endTime" type="number" step="0.001" /></div><div><label>Frame field</label><select id="boxField"><option value="bbox">confirmation bbox</option><option value="baseline_bbox">baseline bbox</option><option value="new_bbox">new bbox</option><option value="roi">sample ROI</option></select></div></div>
@@ -199,7 +200,7 @@ function renderEvents() {
 function fillEvent() {
   const e = current.events[selectedEvent]; if (!e) return;
   $('type').value = e.type; $('quality').value = e.quality_status || current.quality_status || 'provisional'; $('objectId').value = e.object_id || '';
-  $('objectClass').value = e.object_class || ''; $('difficult').checked = Boolean(e.difficult); $('ambiguous').checked = Boolean(e.ambiguous);
+  $('objectClass').value = e.object_class || ''; $('movementOutcome').value = e.movement_outcome || ''; $('difficult').checked = Boolean(e.difficult); $('ambiguous').checked = Boolean(e.ambiguous);
   $('startTime').value = e.start_time_sec ?? ''; $('confirmationTime').value = e.confirmation_time_sec ?? ''; $('endTime').value = e.end_time_sec ?? '';
   $('startFrame').value = e.start_frame ?? ''; $('confirmationFrame').value = e.confirmation_frame ?? ''; $('endFrame').value = e.end_frame ?? '';
   $('notes').value = e.notes || ''; const field = $('boxField').value; $('bbox').value = boxText(field === 'roi' ? (current.roi || {}).bbox : e[field]); drawBoxes();
@@ -212,6 +213,7 @@ function applyEvent() {
   const field = $('boxField').value; if (field === 'roi') { current.roi = current.roi || {}; current.roi.bbox = parseBox($('bbox').value); }
   const e = current.events[selectedEvent]; if (!e || field === 'roi') return;
   e.type = $('type').value; e.quality_status = $('quality').value; e.object_id = $('objectId').value.trim();
+  e.movement_outcome = e.type === 'MOVED_OBJECT' ? ($('movementOutcome').value || null) : null;
   e.object_class = $('objectClass').value.trim() || null; e.difficult = $('difficult').checked; e.ambiguous = $('ambiguous').checked;
   e.start_time_sec = Number($('startTime').value); e.confirmation_time_sec = $('confirmationTime').value === '' ? null : Number($('confirmationTime').value); e.end_time_sec = $('endTime').value === '' ? null : Number($('endTime').value);
   e.start_frame = $('startFrame').value === '' ? null : Number($('startFrame').value); e.confirmation_frame = $('confirmationFrame').value === '' ? null : Number($('confirmationFrame').value); e.end_frame = $('endFrame').value === '' ? null : Number($('endFrame').value);
@@ -232,7 +234,7 @@ async function save() { applyEvent(); try { await api(`/api/samples/${encodeURIC
  $('sample').onchange=loadSample; $('event').onchange=()=>{selectedEvent=Number($('event').value);fillEvent();}; $('boxField').onchange=()=>{const field=$('boxField').value; const event=current.events[selectedEvent] || {}; $('bbox').value=boxText(field === 'roi' ? (current.roi || {}).bbox : event[field]);drawBoxes();}; $('load').onclick=loadFrame; $('prev').onclick=()=>{$('frame').value=Math.max(0,Number($('frame').value)-1);loadFrame();}; $('next').onclick=()=>{$('frame').value=Math.min(Number($('frame').max),Number($('frame').value)+1);loadFrame();}; $('save').onclick=save; $('frameImage').onload=drawBoxes;
  function markFrame(field) { if (selectedEvent < 0) return; $(`${field}Frame`).value = Number($('frame').value); applyEvent(); }
  $('markStart').onclick=()=>markFrame('start'); $('markConfirmation').onclick=()=>markFrame('confirmation'); $('markEnd').onclick=()=>markFrame('end');
- $('newEvent').onclick=()=>{ current.events.push({event_id:`draft_${Date.now()}`,type:'FORGOTTEN_OBJECT',object_id:'',start_time_sec:Number($('frame').value)/current.fps,confirmation_time_sec:null,end_time_sec:null,start_frame:Number($('frame').value),confirmation_frame:null,end_frame:null,bbox:null,baseline_bbox:null,new_bbox:null,quality_status:'provisional',notes:''}); selectedEvent=current.events.length-1;renderEvents(); };
+ $('newEvent').onclick=()=>{ current.events.push({event_id:`draft_${Date.now()}`,type:'FORGOTTEN_OBJECT',object_id:'',start_time_sec:Number($('frame').value)/current.fps,confirmation_time_sec:null,end_time_sec:null,start_frame:Number($('frame').value),confirmation_frame:null,end_frame:null,bbox:null,baseline_bbox:null,new_bbox:null,movement_outcome:null,quality_status:'provisional',notes:''}); selectedEvent=current.events.length-1;renderEvents(); };
 ['mousedown','mousemove','mouseup'].forEach(name => $('overlay').addEventListener(name, ev => { if (!current || (selectedEvent < 0 && $('boxField').value !== 'roi')) return; const rect=$('overlay').getBoundingClientRect(); const x=Math.round((ev.clientX-rect.left)*$('frameImage').naturalWidth/$('overlay').width), y=Math.round((ev.clientY-rect.top)*$('frameImage').naturalHeight/$('overlay').height); if(name==='mousedown') drag={x,y}; if(name==='mousemove'&&drag){const b=[Math.min(drag.x,x),Math.min(drag.y,y),Math.max(drag.x,x),Math.max(drag.y,y)];$('bbox').value=b.join(',');drawBoxes();} if(name==='mouseup'&&drag){drag=null;applyEvent();drawBoxes();}}));
 (async()=>{try{samples=await api('/api/samples');$('sample').innerHTML=samples.map(s=>`<option value="${s.video_id}">${s.video_id} [${s.split}]</option>`).join('');await loadSample();}catch(e){setStatus(e.message,true);}})();
 </script>

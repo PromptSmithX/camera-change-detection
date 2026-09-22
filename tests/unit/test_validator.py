@@ -4,7 +4,12 @@ from pathlib import Path
 from change_detection.dataset.validation import validate_manifest
 
 
-def write_dataset(root: Path, *, moved_complete: bool = True) -> Path:
+def write_dataset(
+    root: Path,
+    *,
+    moved_complete: bool = True,
+    movement_outcome: str | None = "relocated",
+) -> Path:
     (root / "media.txt").write_text("media", encoding="utf-8")
     annotation_path = root / "annotations" / "vid_1.json"
     roi_path = root / "roi" / "vid_1.json"
@@ -20,6 +25,7 @@ def write_dataset(root: Path, *, moved_complete: bool = True) -> Path:
         "bbox": None,
         "baseline_bbox": [10, 10, 30, 30],
         "new_bbox": [50, 50, 80, 80] if moved_complete else None,
+        "movement_outcome": movement_outcome,
         "start_frame": 10,
         "confirmation_frame": 20,
         "end_frame": 30,
@@ -77,6 +83,25 @@ def test_official_validation_rejects_missing_moved_destination(tmp_path: Path):
     report = validate_manifest(write_dataset(tmp_path, moved_complete=False), repo_root=tmp_path, mode="official")
     assert not report.ok
     assert any(issue.code == "missing_new_bbox" for issue in report.errors)
+
+
+def test_left_scene_moved_event_allows_missing_destination(tmp_path: Path):
+    report = validate_manifest(
+        write_dataset(tmp_path, moved_complete=False, movement_outcome="left_scene"),
+        repo_root=tmp_path,
+        mode="draft",
+    )
+    assert report.ok
+    assert not any(issue.code == "missing_new_bbox" for issue in report.warnings)
+
+
+def test_left_scene_moved_event_rejects_new_destination(tmp_path: Path):
+    report = validate_manifest(
+        write_dataset(tmp_path, moved_complete=True, movement_outcome="left_scene"),
+        repo_root=tmp_path,
+        mode="draft",
+    )
+    assert any(issue.code == "unexpected_new_bbox" for issue in report.warnings)
 
 
 def test_complete_provisional_dataset_has_no_structural_errors(tmp_path: Path):

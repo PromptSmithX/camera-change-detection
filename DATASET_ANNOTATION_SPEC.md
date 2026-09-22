@@ -72,6 +72,7 @@ dataset/
       "end_time_sec": null,
       "baseline_bbox": [100, 150, 170, 260],
       "new_bbox": [420, 155, 490, 265],
+      "movement_outcome": "relocated",
       "occlusion_intervals": [[12.5, 13.1]],
       "notes": "optional reviewer note"
     }
@@ -104,7 +105,8 @@ dataset/
 ### MOVED_OBJECT specific
 
 - `baseline_bbox`
-- `new_bbox`
+- `movement_outcome`: `relocated` hoặc `left_scene`
+- `new_bbox` bắt buộc khi `movement_outcome = relocated`; phải là `null` khi `movement_outcome = left_scene`
 - same `object_id`
 
 ### Optional but high-value
@@ -224,8 +226,9 @@ read-only inputs to migration.
   and `end_frame` are traceability metadata and must agree with FPS when they
   are present.
 - `FORGOTTEN_OBJECT` requires the confirmation `bbox`. `MOVED_OBJECT`
-  requires `baseline_bbox`, `new_bbox`, and one persistent `object_id` after
-  review.
+  requires `baseline_bbox`, `movement_outcome`, and one persistent `object_id`
+  after review. `new_bbox` is required only for the `relocated` outcome; it is
+  null for `left_scene`.
 - `quality_status` is one of `verified`, `provisional`, or `excluded`.
   Draft migration may contain provisional records; official benchmark and
   locked test artifacts may contain verified records only.

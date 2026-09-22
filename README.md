@@ -7,7 +7,7 @@ Bộ tài liệu này là source of truth cho việc xây lại hệ thống ph�
 Hệ thống nhận video file hoặc webcam/camera cố định, cho phép chọn ROI, hiệu chuẩn baseline và phát hiện hai loại sự kiện chính:
 
 - `FORGOTTEN_OBJECT`: vật thể mới xuất hiện trong ROI và tồn tại ổn định đủ lâu.
-- `MOVED_OBJECT`: vật thể thuộc baseline bị di chuyển khỏi vị trí ban đầu sang vị trí mới.
+- `MOVED_OBJECT`: vật thể thuộc baseline bị dịch chuyển khỏi vị trí ban đầu, sang vị trí mới hoặc rời ROI/camera.
 
 Hệ thống phải chịu được các tình huống phổ biến như thay đổi ánh sáng, người che khuất, tracker dropout, đổi track ID và nhiễu nhỏ gần biên ROI.
 

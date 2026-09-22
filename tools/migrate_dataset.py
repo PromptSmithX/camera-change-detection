@@ -1,8 +1,9 @@
 """Create a non-destructive canonical benchmark draft from data/processed.
 
-The migration deliberately does not invent confirmation times or moved-object
-destinations.  Those fields remain null and the affected records stay
-provisional/excluded until reviewed in the annotation tool.
+The migration deliberately does not invent confirmation times, movement
+outcomes, or moved-object destinations. Those fields remain null and the
+affected records stay provisional/excluded until reviewed in the annotation
+tool.
 """
 
 from __future__ import annotations
@@ -54,23 +55,30 @@ def _canonical_event(event: dict[str, Any], *, sample: dict[str, Any], index: in
     event_type = str(event["type"])
     bbox = object_data.get("bbox")
     baseline_bbox = object_data.get("old_bbox")
+    new_bbox = event.get("new_bbox", object_data.get("new_bbox"))
+    confirmation_frame = event.get("confirmation_frame")
+    confirmation_frame = int(confirmation_frame) if confirmation_frame is not None else None
+    movement_outcome = event.get("movement_outcome")
+    if movement_outcome is None and event_type == "MOVED_OBJECT" and new_bbox is not None:
+        movement_outcome = "relocated"
     return {
         "event_id": str(event["id"]),
         "type": event_type,
         "object_id": object_id,
         "start_time_sec": start_frame / fps,
-        "confirmation_time_sec": None,
+        "confirmation_time_sec": confirmation_frame / fps if confirmation_frame is not None else None,
         "end_time_sec": end_frame / fps,
         "bbox": bbox,
         "baseline_bbox": baseline_bbox if event_type == "MOVED_OBJECT" else None,
-        "new_bbox": None,
+        "new_bbox": new_bbox if event_type == "MOVED_OBJECT" else None,
+        "movement_outcome": movement_outcome if event_type == "MOVED_OBJECT" else None,
         "object_class": object_data.get("class"),
         "start_frame": start_frame,
-        "confirmation_frame": None,
+        "confirmation_frame": confirmation_frame,
         "end_frame": end_frame,
         "occlusion_intervals": [],
         "lighting_change_intervals": [],
-        "notes": "Migrated from data/processed; confirmation and identity evidence require review.",
+        "notes": "Migrated from data/processed; confirmation, outcome, and identity evidence require review.",
         "difficult": False,
         "ambiguous": bool(status == "excluded"),
         "quality_status": status,
@@ -115,8 +123,8 @@ def migrate(
         frame_count = int(source_sample["num_frames"])
         fps = float(source_sample["fps"])
         canonical_events = [
-            _canonical_event(event, sample=source_sample, index=index, status=status)
-            for index, event in enumerate(source_sample.get("events", []))
+            _canonical_event(event, sample=source_annotation, index=index, status=status)
+            for index, event in enumerate(source_annotation.get("events", []))
         ]
         roi_data = source_sample.get("roi", {}).get("bbox")
         reference_range = source_sample.get("reference", {}).get("frame_range")
@@ -195,7 +203,7 @@ def migrate(
 
     canonical_manifest = {
         "dataset_version": "1.0.0-draft",
-        "annotation_schema_version": "1.0",
+        "annotation_schema_version": "1.1",
         "frame_indexing": "zero_based",
         "range_semantics": "inclusive",
         "bbox_semantics": "integer_half_open",

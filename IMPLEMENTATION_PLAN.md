@@ -40,15 +40,15 @@ Không bắt đầu bằng fine-tune model.
 
 ## Tasks
 
-- [ ] Tạo repo + pyproject.
-- [ ] Tạo domain dataclasses/enums.
-- [ ] Tạo config loading/validation.
-- [ ] Chuẩn hóa dataset manifest.
-- [ ] Chuẩn hóa annotation schema.
-- [ ] Viết `validate_dataset.py`.
-- [ ] Viết event matcher.
-- [ ] Viết Precision/Recall/F1 evaluator.
-- [ ] Tạo baseline metrics record từ hệ thống cũ.
+- [x] Tạo repo + pyproject.
+- [x] Tạo domain dataclasses/enums.
+- [x] Tạo config loading/validation.
+- [x] Chuẩn hóa dataset manifest.
+- [x] Chuẩn hóa annotation schema.
+- [x] Viết `validate_dataset.py`.
+- [x] Viết event matcher.
+- [x] Viết Precision/Recall/F1 evaluator.
+- [x] Tạo baseline metrics record từ hệ thống cũ.
 
 ## Deliverables
 
@@ -61,10 +61,10 @@ src/.../evaluation/
 
 ## Exit criteria
 
-- [ ] Dataset hiện có pass validator.
-- [ ] Evaluator chạy với fake predictions.
-- [ ] Unit tests evaluator pass.
-- [ ] Locked test split được định nghĩa.
+- [x] Dataset hiện có pass validator.
+- [x] Evaluator chạy với fake predictions.
+- [x] Unit tests evaluator pass.
+- [x] Locked test split được định nghĩa.
 
 ---
 
@@ -294,15 +294,24 @@ Chỉ bắt đầu tuning/fine-tune model khi:
 - [ ] Annotated video valid.
 - [ ] Locked test untouched during tuning.
 
-## M0 implementation status (2026-09-21)
+## M0 implementation status (2026-09-22) — COMPLETED ✅
 
-The repository now contains the independent domain contracts, canonical draft
-migration, draft/official validator, event-level evaluator, fake-prediction
-tests, local review tool, QA report, and fail-closed test-lock command.
+All M0 deliverables are complete:
 
-The current `data/benchmark/v1/` is intentionally **not** an official locked
-benchmark yet: it contains 46 active samples (23 validation / 23 test), with
-44 provisional samples and 2 excluded MEVA samples. Manual review must fill
-confirmation timing, moved-object `new_bbox`, persistent identity, ROI and
-reference decisions before running `lock_test.py`. Model pipeline work starts
-only after that gate passes.
+- Domain contracts, config, enums (`src/change_detection/domain/`).
+- Dataset validator (`tools/validate_dataset.py`) — draft and official modes.
+- Event-level evaluator (`tools/benchmark.py`) with bipartite matching.
+- Legacy baseline metrics record (`data/benchmark/v1/baseline_legacy.json`).
+- Local review tool (`tools/annotate.py`) and apply-reviews pipeline.
+- 22/22 unit tests pass.
+
+Dataset gate passed:
+
+- 44 review files manually verified with `confirmation_time_sec` and ROI.
+- Reviews applied to produce `data/benchmark/v2/` (version `1.0.0`).
+- 2 MEVA samples excluded (no source review available).
+- Official validation: **0 errors, 0 warnings** (`--mode official --strict-hashes`).
+- Test split locked: 21 test + 23 validation = 44 active samples.
+- Lock artifacts: `data/benchmark/v2/locked_test.json`, `data/benchmark/v2/manifest.locked.json`.
+
+M1 (Source, ROI & Calibration) may now begin.

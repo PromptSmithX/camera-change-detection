@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from change_detection.domain import BBox, EventAnnotation, EventType
+from change_detection.domain import BBox, EventAnnotation, EventType, MovementOutcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +53,10 @@ def _prediction_bbox(event: EventAnnotation, *, moved: bool) -> BBox | None:
 
 def _spatial_score(prediction: EventAnnotation, ground_truth: EventAnnotation, config: EvaluationConfig) -> float | None:
     if ground_truth.event_type == EventType.MOVED_OBJECT:
+        if ground_truth.movement_outcome == MovementOutcome.LEFT_SCENE:
+            if ground_truth.baseline_bbox is None or prediction.baseline_bbox is None:
+                return None
+            return ground_truth.baseline_bbox.iou(prediction.baseline_bbox)
         gt_pairs = (ground_truth.baseline_bbox, ground_truth.new_bbox)
         pred_pairs = (prediction.baseline_bbox, prediction.new_bbox)
         if any(item is None for item in gt_pairs + pred_pairs):
@@ -75,6 +79,11 @@ def _identity_match(prediction: EventAnnotation, ground_truth: EventAnnotation, 
 
 def _match_score(prediction: EventAnnotation, ground_truth: EventAnnotation, config: EvaluationConfig) -> float | None:
     if prediction.event_type != ground_truth.event_type:
+        return None
+    if (
+        ground_truth.event_type == EventType.MOVED_OBJECT
+        and prediction.movement_outcome != ground_truth.movement_outcome
+    ):
         return None
     if not _temporal_match(prediction, ground_truth, config):
         return None
@@ -120,6 +129,11 @@ def _error_category(
         return "unknown_fp"
     if prediction.event_type != ground_truth.event_type:
         return "wrong_type"
+    if (
+        ground_truth.event_type == EventType.MOVED_OBJECT
+        and prediction.movement_outcome != ground_truth.movement_outcome
+    ):
+        return "movement_outcome_mismatch"
     if not _temporal_match(prediction, ground_truth, config):
         return "temporal_mismatch"
     spatial = _spatial_score(prediction, ground_truth, config)
@@ -193,12 +207,21 @@ def evaluate_events(
         "overall": _metrics(len(matches), len(unmatched_predictions), len(unmatched_ground_truth)),
         "FORGOTTEN_OBJECT": {},
         "MOVED_OBJECT": {},
+        "MOVED_OBJECT_OUTCOMES": {
+            MovementOutcome.RELOCATED.value: {},
+            MovementOutcome.LEFT_SCENE.value: {},
+        },
         "matches": [
             {
                 "prediction_event_id": item.prediction.event_id,
                 "ground_truth_event_id": item.ground_truth.event_id,
                 "score": item.score,
                 "latency_sec": item.latency_sec,
+                "movement_outcome": (
+                    item.ground_truth.movement_outcome.value
+                    if item.ground_truth.movement_outcome is not None
+                    else None
+                ),
             }
             for item in matches
         ],
@@ -214,6 +237,31 @@ def evaluate_events(
             len(type_matches),
             len([item for item in type_pred if item.event_id not in type_prediction_ids]),
             len([item for item in type_gt if item.event_id not in type_gt_ids]),
+        )
+
+    for outcome in MovementOutcome:
+        outcome_matches = [
+            item
+            for item in matches
+            if item.ground_truth.event_type == EventType.MOVED_OBJECT
+            and item.ground_truth.movement_outcome == outcome
+        ]
+        outcome_gt = [
+            item
+            for item in gt
+            if item.event_type == EventType.MOVED_OBJECT and item.movement_outcome == outcome
+        ]
+        outcome_pred = [
+            item
+            for item in pred
+            if item.event_type == EventType.MOVED_OBJECT and item.movement_outcome == outcome
+        ]
+        outcome_prediction_ids = {item.prediction.event_id for item in outcome_matches}
+        outcome_gt_ids = {item.ground_truth.event_id for item in outcome_matches}
+        result["MOVED_OBJECT_OUTCOMES"][outcome.value] = _metrics(
+            len(outcome_matches),
+            len([item for item in outcome_pred if item.event_id not in outcome_prediction_ids]),
+            len([item for item in outcome_gt if item.event_id not in outcome_gt_ids]),
         )
 
     for item in unmatched_predictions:
