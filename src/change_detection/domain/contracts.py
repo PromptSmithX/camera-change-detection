@@ -17,6 +17,13 @@ class EventType(StrEnum):
     MOVED_OBJECT = "MOVED_OBJECT"
 
 
+class MovementOutcome(StrEnum):
+    """How a moved baseline object is observed after leaving its baseline."""
+
+    RELOCATED = "relocated"
+    LEFT_SCENE = "left_scene"
+
+
 class Split(StrEnum):
     VALIDATION = "validation"
     TEST = "test"
@@ -145,6 +152,7 @@ class EventAnnotation:
     bbox: BBox | None = None
     baseline_bbox: BBox | None = None
     new_bbox: BBox | None = None
+    movement_outcome: MovementOutcome | None = None
     object_class: str | None = None
     start_frame: int | None = None
     confirmation_frame: int | None = None
@@ -161,11 +169,23 @@ class EventAnnotation:
         raw_type = data.get("type", data.get("event_type"))
         if raw_type is None:
             raise ValueError("Event is missing type")
+        event_type = EventType(str(raw_type))
         raw_event_id = data.get("event_id", data.get("id"))
         raw_object_id = data.get("object_id")
+        new_bbox = BBox.from_value(data.get("new_bbox", data.get("to_bbox")))
+        raw_outcome = data.get("movement_outcome")
+        movement_outcome = (
+            MovementOutcome(str(raw_outcome))
+            if raw_outcome not in (None, "")
+            else (
+                MovementOutcome.RELOCATED
+                if event_type == EventType.MOVED_OBJECT and new_bbox is not None
+                else None
+            )
+        )
         return cls(
             event_id="" if raw_event_id in (None, "") else str(raw_event_id),
-            event_type=EventType(str(raw_type)),
+            event_type=event_type,
             object_id="" if raw_object_id in (None, "") else str(raw_object_id),
             start_time_sec=float(data.get("start_time_sec", data.get("started_at_sec", 0.0))),
             confirmation_time_sec=_as_optional_float(
@@ -176,7 +196,8 @@ class EventAnnotation:
             baseline_bbox=BBox.from_value(
                 data.get("baseline_bbox", data.get("before_bbox", data.get("from_bbox")))
             ),
-            new_bbox=BBox.from_value(data.get("new_bbox", data.get("to_bbox"))),
+            new_bbox=new_bbox,
+            movement_outcome=movement_outcome,
             object_class=data.get("object_class", data.get("class")),
             start_frame=_as_optional_int(data.get("start_frame")),
             confirmation_frame=_as_optional_int(data.get("confirmation_frame")),
@@ -202,6 +223,7 @@ class EventAnnotation:
             "bbox": self.bbox.to_list() if self.bbox else None,
             "baseline_bbox": self.baseline_bbox.to_list() if self.baseline_bbox else None,
             "new_bbox": self.new_bbox.to_list() if self.new_bbox else None,
+            "movement_outcome": self.movement_outcome.value if self.movement_outcome else None,
             "object_class": self.object_class,
             "start_frame": self.start_frame,
             "confirmation_frame": self.confirmation_frame,

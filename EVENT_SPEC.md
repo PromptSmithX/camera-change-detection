@@ -98,16 +98,20 @@ Các giá trị chỉ là starting point, phải tune trên validation.
 
 ### 4.1 Definition
 
-`MOVED_OBJECT` xảy ra khi một baseline object được xác nhận có cùng identity nhưng ở vị trí mới đủ xa vị trí baseline.
+`MOVED_OBJECT` xảy ra khi một baseline object được xác nhận đã bị dịch chuyển khỏi vị trí baseline. Event có hai outcome:
+
+- `relocated`: cùng object được xác nhận ổn định ở vị trí mới trong ROI/camera;
+- `left_scene`: cùng object bị cầm đi, lái đi hoặc rời ROI/camera nên không có vị trí mới ổn định để annotate.
 
 Phải có bằng chứng đồng thời:
 
 - baseline object absent tại old location;
-- new/current object xuất hiện tại new location;
-- appearance similarity đủ cao;
-- class/geometry tương thích nếu available;
+- bằng chứng physical displacement hoặc identity continuity đủ mạnh;
+- appearance similarity và class/geometry tương thích nếu available;
 - displacement vượt threshold;
-- trạng thái ổn định đủ lâu.
+- outcome được xác định là `relocated` hoặc `left_scene`.
+
+Với `relocated`, phải có `new_bbox` và trạng thái ở vị trí mới ổn định đủ lâu. Với `left_scene`, không có `new_bbox`; confirmation chỉ hợp lệ khi quan sát được object/actor rời ROI hoặc camera. Occlusion, tracker dropout, lighting change và object biến mất không có bằng chứng vật lý không phải `MOVED_OBJECT`.
 
 ### 4.2 Không được suy luận moved chỉ từ
 
@@ -127,13 +131,12 @@ TEMP_MISSING
        │
        ├── reappears old location ──► BASELINE_PRESENT
        │
-       └── matching identity at new location
-                          │
-                          ▼
-                    MOVE_CANDIDATE
-                          │ stable >= confirm_seconds
-                          ▼
-                    MOVED_CONFIRMED
+       ├── matching identity at new location ──► MOVE_CANDIDATE (relocated)
+       │                                          │ stable >= confirm_seconds
+       └── physical departure from ROI/camera ──► MOVE_CANDIDATE (left_scene)
+                                                  │ confirmation evidence
+                                                  ▼
+                                            MOVED_CONFIRMED
                           │ resolved / recalibrated
                           ▼
                         CLOSED

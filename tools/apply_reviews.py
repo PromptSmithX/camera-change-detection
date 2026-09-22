@@ -70,6 +70,7 @@ def apply_reviews(
     samples: list[dict[str, Any]] = []
     reviewed_ids: list[str] = []
     missing_review_ids: list[str] = []
+    excluded_ids: list[str] = []
     status_counts: Counter[str] = Counter()
     event_counts: Counter[str] = Counter()
 
@@ -82,6 +83,10 @@ def apply_reviews(
         if review_path.exists():
             reviewed_ids.append(video_id)
         else:
+            # Skip excluded samples that have no review override.
+            if source_sample.get("quality_status") == "excluded":
+                excluded_ids.append(video_id)
+                continue
             missing_review_ids.append(video_id)
 
         destination_annotation = output_dir / "annotations" / f"{video_id}.json"
@@ -145,6 +150,7 @@ def apply_reviews(
         "reviewed_sample_count": len(reviewed_ids),
         "reviewed_sample_ids": sorted(reviewed_ids),
         "unreviewed_sample_ids": sorted(missing_review_ids),
+        "excluded_sample_ids": sorted(excluded_ids),
         "status_counts": dict(sorted(status_counts.items())),
         "event_counts": dict(sorted(event_counts.items())),
         "manifest_sha256": manifest_hash,
@@ -161,6 +167,8 @@ def apply_reviews(
             "active_samples": len(samples),
             "reviewed_samples": len(reviewed_ids),
             "unreviewed_samples": len(missing_review_ids),
+            "excluded_samples": len(excluded_ids),
+            "excluded_sample_ids": sorted(excluded_ids),
             "status_counts": dict(sorted(status_counts.items())),
             "event_counts": dict(sorted(event_counts.items())),
         },

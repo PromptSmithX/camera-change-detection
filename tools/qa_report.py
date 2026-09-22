@@ -19,7 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from change_detection.dataset.io import read_json, resolve_repo_path, write_json
 from change_detection.dataset.validation import validate_manifest
-from change_detection.domain import EventType, SampleAnnotation
+from change_detection.domain import EventType, MovementOutcome, SampleAnnotation
 
 
 def _sorted_counts(values: Counter[str]) -> dict[str, int]:
@@ -72,10 +72,21 @@ def build_report(manifest_path: Path, *, repo_root: Path, strict_hashes: bool = 
             event_status_counts[event.quality_status.value] += 1
             if event.confirmation_time_sec is None:
                 missing_confirmation.append({"sample_id": sample_id, "event_id": event.event_id})
-            if event.event_type == EventType.MOVED_OBJECT and (
-                event.baseline_bbox is None or event.new_bbox is None
-            ):
-                incomplete_moved.append({"sample_id": sample_id, "event_id": event.event_id})
+            if event.event_type == EventType.MOVED_OBJECT:
+                missing_evidence = (
+                    event.baseline_bbox is None
+                    or event.movement_outcome is None
+                    or (
+                        event.movement_outcome == MovementOutcome.RELOCATED
+                        and event.new_bbox is None
+                    )
+                    or (
+                        event.movement_outcome == MovementOutcome.LEFT_SCENE
+                        and event.new_bbox is not None
+                    )
+                )
+                if missing_evidence:
+                    incomplete_moved.append({"sample_id": sample_id, "event_id": event.event_id})
 
     validation = validate_manifest(
         manifest_path,

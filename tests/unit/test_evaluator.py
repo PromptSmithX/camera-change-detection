@@ -31,6 +31,22 @@ def moved(event_id: str, start: float = 10.0) -> EventAnnotation:
     )
 
 
+def moved_left_scene(event_id: str, start: float = 10.0) -> EventAnnotation:
+    return EventAnnotation.from_dict(
+        {
+            "event_id": event_id,
+            "type": "MOVED_OBJECT",
+            "object_id": "obj-1",
+            "start_time_sec": start,
+            "confirmation_time_sec": 14.0,
+            "end_time_sec": 20.0,
+            "baseline_bbox": [10, 10, 50, 50],
+            "new_bbox": None,
+            "movement_outcome": "left_scene",
+        }
+    )
+
+
 def test_event_evaluator_matches_one_event_and_reports_latency():
     result = evaluate_events(
         [forgotten("gt-1")],
@@ -63,6 +79,18 @@ def test_moved_event_requires_both_locations():
     assert result["MOVED_OBJECT"]["tp"] == 0
     assert result["MOVED_OBJECT"]["fp"] == 1
     assert result["MOVED_OBJECT"]["fn"] == 1
+
+
+def test_left_scene_moved_event_matches_on_baseline_and_reports_outcome():
+    result = evaluate_events([moved_left_scene("gt-1")], [moved_left_scene("pred-1")])
+    assert result["MOVED_OBJECT"]["tp"] == 1
+    assert result["MOVED_OBJECT_OUTCOMES"]["left_scene"]["tp"] == 1
+
+
+def test_moved_outcomes_do_not_match_each_other():
+    result = evaluate_events([moved_left_scene("gt-1")], [moved("pred-1")])
+    assert result["MOVED_OBJECT"]["tp"] == 0
+    assert result["error_breakdown"]["movement_outcome_mismatch"] == 1
 
 
 def test_wrong_type_does_not_match():

@@ -87,10 +87,11 @@ Có thể dùng:
 Cần xem xét cả:
 
 - baseline location;
-- new location;
+- `movement_outcome`;
+- new location khi outcome là `relocated`;
 - same object identity trong annotation.
 
-Prediction chỉ match nếu from/to locations đủ tương thích theo configured criteria.
+Với `relocated`, prediction chỉ match nếu baseline/new location đủ tương thích theo configured criteria. Với `left_scene`, evaluator so khớp baseline location và outcome; `new_bbox` phải là `null`. Metrics vẫn được tính vào `MOVED_OBJECT`, đồng thời report riêng cho `relocated` và `left_scene`.
 
 ---
 
@@ -150,6 +151,10 @@ Mỗi FP/FN nên được gắn nguyên nhân nếu có thể:
   },
   "FORGOTTEN_OBJECT": {},
   "MOVED_OBJECT": {},
+  "MOVED_OBJECT_OUTCOMES": {
+    "relocated": {},
+    "left_scene": {}
+  },
   "error_breakdown": {}
 }
 ```
