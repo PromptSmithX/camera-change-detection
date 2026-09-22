@@ -90,5 +90,35 @@ validation image sequence and writes only to `runs/`:
 python tools/calibrate.py --config configs/m1.example.json --output runs/m1-example/baseline
 ```
 
-M1 creates a scene reference and stability summary. Object detection and
-baseline object embeddings are intentionally part of M2.
+M1 creates a scene reference and stability summary. Detector-level baseline
+records are added in M2; baseline embeddings and persistent identity start in
+M3.
+
+## M2 perception quickstart
+
+Install the optional detector/tracker runtime into the project environment:
+
+```text
+python -m pip install -e ".[perception]"
+```
+
+For an NVIDIA CUDA environment, install the matching PyTorch wheel before the
+perception extra so the detector uses the GPU instead of a CPU-only torch:
+
+```text
+python -m pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu126
+```
+
+Place `yolov8s.pt` at `weights/yolov8s.pt` (or change
+`perception.detector.model`), keep `perception.detector.device` as `"0"` for
+the first CUDA GPU, then run the detector and short-term tracker:
+
+```text
+python tools/run_perception.py --config configs/m2.example.json --output runs/m2/example
+```
+
+For CPU fallback, set `perception.detector.device` to `"cpu"`.
+
+M2 writes `metadata.json`, `observations.jsonl`, and `annotated.mp4` under
+`runs/`. It exposes only short-term `tracker_id`; persistent identity and event
+logic start in M3/M4.

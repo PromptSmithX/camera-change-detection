@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,13 +19,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from change_detection.config import ConfigValidationError, load_config
-from change_detection.scene import BBoxROI, CalibrationError, CalibrationService, ROIError, load_roi_file
-from change_detection.sources import ImageSequenceSource, SourceError, VideoSource, WebcamSource
+from change_detection.infrastructure.models import YoloDetector
+from change_detection.perception import PerceptionDependencyError
+from change_detection.pipeline import build_roi, build_source, resolve_input
+from change_detection.scene import CalibrationError, CalibrationService, ROIError
+from change_detection.sources import SourceError
 
 
 def _resolve_input(root: Path, value: str) -> Path:
-    path = Path(value)
-    return path.resolve() if path.is_absolute() else (root / path).resolve()
+    return resolve_input(root, value)
 
 
 def _resolve_output(root: Path, value: str) -> Path:
@@ -35,46 +38,26 @@ def _resolve_output(root: Path, value: str) -> Path:
     return output
 
 
+def _prepare_runtime_environment(root: Path) -> None:
+    config_root = root / "runs" / "ultralytics-config"
+    (config_root / "Ultralytics").mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(config_root))
+
+
+def _resolve_model(root: Path, model: str) -> str:
+    candidate = Path(model)
+    if candidate.is_absolute():
+        return str(candidate)
+    local_candidate = root / candidate
+    return str(local_candidate.resolve()) if local_candidate.is_file() else model
+
+
 def _build_source(config, root: Path):
-    source_config = config.source
-    if source_config.type == "video":
-        assert source_config.path is not None
-        return VideoSource(
-            _resolve_input(root, source_config.path),
-            source_id=source_config.source_id,
-        )
-    if source_config.type == "image_sequence":
-        assert source_config.path is not None and source_config.fps is not None
-        return ImageSequenceSource(
-            _resolve_input(root, source_config.path),
-            fps=source_config.fps,
-            frame_pattern=source_config.frame_pattern,
-            source_id=source_config.source_id,
-        )
-    return WebcamSource(
-        source_config.device_index,
-        source_id=source_config.source_id,
-        fps=source_config.fps,
-    )
+    return build_source(config, root)
 
 
 def _build_roi(config, root: Path, source):
-    roi_config = config.roi
-    if roi_config.path:
-        return load_roi_file(
-            _resolve_input(root, roi_config.path),
-            source_width=source.metadata.width,
-            source_height=source.metadata.height,
-            clip=True,
-        )
-    if roi_config.coordinates is None:
-        raise ROIError("Config must provide roi.coordinates or roi.path")
-    return BBoxROI.from_coordinates(
-        roi_config.coordinates,
-        source_width=source.metadata.width,
-        source_height=source.metadata.height,
-        clip=True,
-    )
+    return build_roi(config, root, source)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,10 +80,33 @@ def main() -> int:
         service = CalibrationService(config.calibration, config.stability)
         with source:
             result = service.calibrate(source, roi)
+        if config.perception.enabled:
+            _prepare_runtime_environment(root)
+            detector_config = config.perception.detector
+            detector = YoloDetector(
+                _resolve_model(root, detector_config.model),
+                confidence=detector_config.confidence,
+                iou=detector_config.iou,
+                device=detector_config.device,
+                classes=detector_config.classes,
+                max_detections=detector_config.max_detections,
+            )
+            baseline_detections = detector.detect(result.baseline.reference_image, roi)
+            result.baseline.baseline_objects = tuple(
+                detection.to_dict() for detection in baseline_detections
+            )
         metadata_path = result.baseline.save(_resolve_output(root, str(args.output)))
         print(json.dumps({"baseline": str(metadata_path), **result.baseline.to_dict()}, indent=2))
         return 0
-    except (ConfigValidationError, CalibrationError, ROIError, SourceError, OSError, ValueError) as exc:
+    except (
+        ConfigValidationError,
+        CalibrationError,
+        PerceptionDependencyError,
+        ROIError,
+        SourceError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"Calibration failed: {exc}", file=sys.stderr)
         if isinstance(exc, CalibrationError) and exc.diagnostics:
             print(json.dumps(exc.diagnostics, indent=2), file=sys.stderr)

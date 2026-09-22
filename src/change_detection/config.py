@@ -269,6 +269,178 @@ class StabilityConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    """Runtime sampling settings shared by perception runners."""
+
+    processing_fps: float = 5.0
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "RuntimeConfig":
+        _reject_unknown(value, {"processing_fps"}, name="runtime")
+        return cls(
+            processing_fps=_finite_number(
+                value.get("processing_fps", 5.0),
+                name="runtime.processing_fps",
+                minimum=0.000001,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorConfig:
+    """Model-independent settings for the M2 detector adapter."""
+
+    model: str = "yolov8s.pt"
+    confidence: float = 0.35
+    iou: float = 0.7
+    device: str | None = None
+    classes: tuple[int, ...] | None = None
+    max_detections: int = 300
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "DetectorConfig":
+        _reject_unknown(
+            value,
+            {"model", "confidence", "iou", "device", "classes", "max_detections"},
+            name="perception.detector",
+        )
+        model = str(value.get("model", "yolov8s.pt")).strip()
+        if not model:
+            raise ConfigValidationError("perception.detector.model must not be empty")
+        device_value = value.get("device")
+        device = str(device_value).strip() if device_value not in (None, "") else None
+        raw_classes = value.get("classes")
+        classes: tuple[int, ...] | None = None
+        if raw_classes is not None:
+            if not isinstance(raw_classes, (list, tuple)):
+                raise ConfigValidationError("perception.detector.classes must be an array")
+            parsed: list[int] = []
+            for item in raw_classes:
+                if isinstance(item, bool):
+                    raise ConfigValidationError(
+                        "perception.detector.classes must contain non-negative integers"
+                    )
+                try:
+                    class_id = int(item)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigValidationError(
+                        "perception.detector.classes must contain non-negative integers"
+                    ) from exc
+                if class_id < 0:
+                    raise ConfigValidationError(
+                        "perception.detector.classes must contain non-negative integers"
+                    )
+                parsed.append(class_id)
+            classes = tuple(dict.fromkeys(parsed))
+        max_detections = value.get("max_detections", 300)
+        if isinstance(max_detections, bool):
+            raise ConfigValidationError("perception.detector.max_detections must be a positive integer")
+        try:
+            max_detections = int(max_detections)
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                "perception.detector.max_detections must be a positive integer"
+            ) from exc
+        if max_detections < 1:
+            raise ConfigValidationError("perception.detector.max_detections must be a positive integer")
+        return cls(
+            model=model,
+            confidence=_finite_number(
+                value.get("confidence", 0.35),
+                name="perception.detector.confidence",
+                maximum=1.0,
+            ),
+            iou=_finite_number(
+                value.get("iou", 0.7),
+                name="perception.detector.iou",
+                maximum=1.0,
+            ),
+            device=device,
+            classes=classes,
+            max_detections=max_detections,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerConfig:
+    """ByteTrack settings exposed without importing the tracker library."""
+
+    track_activation_threshold: float = 0.25
+    lost_track_buffer: int = 30
+    minimum_matching_threshold: float = 0.8
+    minimum_consecutive_frames: int = 1
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "TrackerConfig":
+        _reject_unknown(
+            value,
+            {
+                "track_activation_threshold",
+                "lost_track_buffer",
+                "minimum_matching_threshold",
+                "minimum_consecutive_frames",
+            },
+            name="perception.tracker",
+        )
+        buffer_size = value.get("lost_track_buffer", 30)
+        consecutive = value.get("minimum_consecutive_frames", 1)
+        if isinstance(buffer_size, bool) or isinstance(consecutive, bool):
+            raise ConfigValidationError("perception.tracker frame settings must be integers")
+        try:
+            buffer_size = int(buffer_size)
+            consecutive = int(consecutive)
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                "perception.tracker frame settings must be integers"
+            ) from exc
+        if buffer_size < 1 or consecutive < 1:
+            raise ConfigValidationError("perception.tracker frame settings must be positive")
+        return cls(
+            track_activation_threshold=_finite_number(
+                value.get("track_activation_threshold", 0.25),
+                name="perception.tracker.track_activation_threshold",
+                maximum=1.0,
+            ),
+            lost_track_buffer=buffer_size,
+            minimum_matching_threshold=_finite_number(
+                value.get("minimum_matching_threshold", 0.8),
+                name="perception.tracker.minimum_matching_threshold",
+                maximum=1.0,
+            ),
+            minimum_consecutive_frames=consecutive,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionConfig:
+    """M2 perception configuration.
+
+    It is disabled by default so existing M1 calibration configs do not
+    suddenly require ML dependencies or model weights.
+    """
+
+    enabled: bool = False
+    detector: DetectorConfig = DetectorConfig()
+    tracker: TrackerConfig = TrackerConfig()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "PerceptionConfig":
+        _reject_unknown(value, {"enabled", "detector", "tracker"}, name="perception")
+        enabled = value.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError("perception.enabled must be boolean")
+        return cls(
+            enabled=enabled,
+            detector=DetectorConfig.from_mapping(
+                _mapping(value.get("detector", {}), name="perception.detector")
+            ),
+            tracker=TrackerConfig.from_mapping(
+                _mapping(value.get("tracker", {}), name="perception.tracker")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SystemConfig:
     dataset_version: str = "development"
     forgotten: EventTimingConfig = EventTimingConfig()
@@ -278,6 +450,8 @@ class SystemConfig:
     roi: ROIConfig = ROIConfig()
     calibration: CalibrationConfig = CalibrationConfig()
     stability: StabilityConfig = StabilityConfig()
+    runtime: RuntimeConfig = RuntimeConfig()
+    perception: PerceptionConfig = PerceptionConfig()
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -291,6 +465,8 @@ class SystemConfig:
             "roi": asdict(self.roi),
             "calibration": asdict(self.calibration),
             "stability": asdict(self.stability),
+            "runtime": asdict(self.runtime),
+            "perception": asdict(self.perception),
         }
         # An empty source section is the serializable representation of the
         # intentionally unconfigured default SourceConfig.  This keeps
@@ -306,7 +482,17 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
 
     _reject_unknown(
         value,
-        {"dataset_version", "events", "evaluation", "source", "roi", "calibration", "stability"},
+        {
+            "dataset_version",
+            "events",
+            "evaluation",
+            "source",
+            "roi",
+            "calibration",
+            "stability",
+            "runtime",
+            "perception",
+        },
         name="root",
     )
     dataset_version = str(value.get("dataset_version", "development")).strip()
@@ -337,6 +523,12 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
     stability = StabilityConfig.from_mapping(
         _mapping(value.get("stability", {}), name="stability")
     )
+    runtime = RuntimeConfig.from_mapping(
+        _mapping(value.get("runtime", {}), name="runtime")
+    )
+    perception = PerceptionConfig.from_mapping(
+        _mapping(value.get("perception", {}), name="perception")
+    )
     return SystemConfig(
         dataset_version=dataset_version,
         forgotten=forgotten,
@@ -346,6 +538,8 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
         roi=roi,
         calibration=calibration,
         stability=stability,
+        runtime=runtime,
+        perception=perception,
     )
 
 

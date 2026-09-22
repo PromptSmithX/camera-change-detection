@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "change-detection-v2"
 version = "0.1.0"
 description = "Fixed-camera change detection contracts, sources, calibration, and evaluation foundation."
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.7,<3",
 ]
@@ -20,6 +20,12 @@ dev = [
 runtime = [
   "numpy>=2.0",
   "opencv-python>=4.10",
+]
+perception = [
+  "numpy>=2.0",
+  "opencv-python>=4.10",
+  "ultralytics>=8.3,<9",
+  "supervision>=0.24,<0.31",
 ]
 review = [
   "fastapi>=0.110",

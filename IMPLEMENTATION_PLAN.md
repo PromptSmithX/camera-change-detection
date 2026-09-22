@@ -100,18 +100,18 @@ src/.../evaluation/
 
 ## Tasks
 
-- [ ] Detector interface.
-- [ ] YOLO adapter.
-- [ ] Tracker interface.
-- [ ] ByteTrack adapter.
-- [ ] Observation builder.
-- [ ] Visual debug overlay.
+- [x] Detector interface.
+- [x] YOLO adapter.
+- [x] Tracker interface.
+- [x] ByteTrack adapter.
+- [x] Observation builder.
+- [x] Visual debug overlay.
 
 ## Exit criteria
 
-- [ ] Pipeline hiển thị bbox, class, confidence.
-- [ ] Track continuity hoạt động basic.
-- [ ] Model-specific result không leak ra domain layer.
+- [x] Pipeline hiển thị bbox, class, confidence.
+- [x] Track continuity hoạt động basic.
+- [x] Model-specific result không leak ra domain layer.
 
 ---
 
@@ -326,3 +326,20 @@ M1 runtime foundations are implemented:
 - Scene stability, deterministic calibration, and `SceneBaseline` persistence are covered by tests.
 - Baseline artifacts are written under `runs/`; benchmark and locked-test files remain untouched.
 - Detector, tracker, encoder, and baseline object recognition remain scoped to M2.
+
+## M2 implementation status (2026-09-22) — IMPLEMENTED
+
+M2 perception code and deterministic tests are implemented:
+
+- Framework-independent `Detection`, `Track`, and `Observation` contracts.
+- Ultralytics YOLO adapter with ROI crop/coordinate translation.
+- Supervision ByteTrack adapter with short-term tracker reset and ID mapping.
+- Reusable source/ROI construction and `tools/run_perception.py` runner.
+- JSONL observation records, metadata, and annotated MP4 debug output.
+- Optional calibration-time baseline detections; persistent identity remains deferred to M3.
+
+The local unit/integration suite passes. A real YOLO/ByteTrack smoke test was
+run with `weights/yolov8s.pt` on the RTX 3050 CUDA device: 900 processed
+frames, 627 detections, and 462 short-term tracks. Artifacts are under
+`runs/m2/rtx3050/`; automatic GitHub weight download is not part of the
+repository workflow.
