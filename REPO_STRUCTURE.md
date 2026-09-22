@@ -123,6 +123,10 @@ Code bên ngoài không được truyền raw Ultralytics result.
 
 Không hardcode threshold trong Python.
 
+The current M0/M1 implementation loads JSON and TOML. The YAML-shaped
+example below remains an architectural illustration until a YAML loader is
+explicitly added.
+
 Example:
 
 ```yaml

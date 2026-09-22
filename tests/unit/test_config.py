@@ -23,6 +23,7 @@ def test_config_validation_is_model_independent_and_round_trips(tmp_path: Path):
     assert config.forgotten.confirm_seconds == 4.0
     assert config.evaluation.moved_iou_threshold == 0.4
     assert config.to_dict()["evaluation"]["min_temporal_overlap"] == 0.1
+    assert validate_config(config.to_dict()).source.type == "video"
 
 
 def test_config_rejects_invalid_threshold_and_unknown_field():
@@ -30,3 +31,27 @@ def test_config_rejects_invalid_threshold_and_unknown_field():
         validate_config({"evaluation": {"min_temporal_overlap": 1.1}})
     with pytest.raises(ConfigValidationError, match="Unknown root field"):
         validate_config({"model": {}})
+
+
+def test_m1_toml_config_loads_source_and_calibration(tmp_path: Path):
+    path = tmp_path / "m1.toml"
+    path.write_text(
+        """
+[source]
+type = \"image_sequence\"
+path = \"frames\"
+frame_pattern = \"*.bmp\"
+fps = 25.0
+
+[roi]
+coordinates = [0, 0, 32, 24]
+
+[calibration]
+sample_count = 4
+""".strip(),
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.source.type == "image_sequence"
+    assert config.source.frame_pattern == "*.bmp"
+    assert config.calibration.sample_count == 4
