@@ -38,7 +38,11 @@ def _safe_reference_path(metadata_path: Path, relative_path: str) -> Path:
 
 @dataclass(slots=True)
 class SceneBaseline:
-    """M1 reference scene; object identity is intentionally deferred to M2."""
+    """Reference scene plus optional M2 detector records.
+
+    ``baseline_objects`` contains detector-level records only.  Persistent
+    object identity and appearance memory are intentionally deferred to M3.
+    """
 
     source: SourceMetadata
     roi: BBoxROI

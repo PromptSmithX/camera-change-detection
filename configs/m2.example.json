@@ -1,0 +1,33 @@
+{
+  "source": {
+    "type": "image_sequence",
+    "path": "data/raw/cdnet 2014/intermittentObjectMotion/abandonedBox/input",
+    "source_id": "cdnet2014_abandonedbox",
+    "frame_pattern": "in*.jpg",
+    "fps": 25.0
+  },
+  "roi": {
+    "type": "bbox",
+    "path": "data/benchmark/v2/roi/cdnet2014_abandonedbox.json"
+  },
+  "runtime": {
+    "processing_fps": 5.0
+  },
+  "perception": {
+    "enabled": true,
+    "detector": {
+      "model": "weights/yolov8s.pt",
+      "confidence": 0.35,
+      "iou": 0.7,
+      "device": "0",
+      "classes": null,
+      "max_detections": 300
+    },
+    "tracker": {
+      "track_activation_threshold": 0.25,
+      "lost_track_buffer": 30,
+      "minimum_matching_threshold": 0.8,
+      "minimum_consecutive_frames": 1
+    }
+  }
+}

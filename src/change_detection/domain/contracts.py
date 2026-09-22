@@ -127,6 +127,152 @@ class BBox:
         return intersection / union if union else 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class Point:
+    """A framework-independent 2D point in source-image coordinates."""
+
+    x: float
+    y: float
+
+    def __post_init__(self) -> None:
+        if not isfinite(float(self.x)) or not isfinite(float(self.y)):
+            raise ValueError("Point coordinates must be finite")
+
+    def to_list(self) -> list[float]:
+        return [float(self.x), float(self.y)]
+
+
+@dataclass(frozen=True, slots=True)
+class Detection:
+    """One model-independent detector result.
+
+    ``mask`` is intentionally opaque.  M2 only uses bounding boxes, while a
+    future segmentation adapter may populate it without changing the public
+    detection fields.
+    """
+
+    bbox: BBox
+    confidence: float
+    class_id: int
+    class_name: str
+    mask: Any = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
+            raise ValueError("Detection confidence must be finite and between 0 and 1")
+        if isinstance(self.class_id, bool) or int(self.class_id) < 0:
+            raise ValueError("Detection class_id must be a non-negative integer")
+        if not str(self.class_name).strip():
+            raise ValueError("Detection class_name must not be empty")
+        if self.bbox.area <= 0:
+            raise ValueError("Detection bbox must have positive area")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bbox": self.bbox.to_list(),
+            "confidence": float(self.confidence),
+            "class_id": int(self.class_id),
+            "class_name": self.class_name,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Track:
+    """Short-term tracker output.
+
+    ``tracker_id`` is deliberately scoped to one runtime stream.  It must not
+    be used as the persistent identity required by M3 and later milestones.
+    """
+
+    tracker_id: int
+    bbox: BBox
+    confidence: float
+    class_id: int
+    class_name: str
+    detection_index: int | None = None
+    age_frames: int = 1
+    hits: int = 1
+    time_since_update: int = 0
+    is_confirmed: bool = True
+
+    def __post_init__(self) -> None:
+        if isinstance(self.tracker_id, bool) or int(self.tracker_id) < 0:
+            raise ValueError("Track tracker_id must be a non-negative integer")
+        if not isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
+            raise ValueError("Track confidence must be finite and between 0 and 1")
+        if isinstance(self.class_id, bool) or int(self.class_id) < 0:
+            raise ValueError("Track class_id must be a non-negative integer")
+        if not str(self.class_name).strip():
+            raise ValueError("Track class_name must not be empty")
+        if self.bbox.area <= 0:
+            raise ValueError("Track bbox must have positive area")
+        if self.detection_index is not None and (
+            isinstance(self.detection_index, bool) or int(self.detection_index) < 0
+        ):
+            raise ValueError("Track detection_index must be a non-negative integer")
+        if self.age_frames < 1 or self.hits < 1 or self.time_since_update < 0:
+            raise ValueError("Track frame counters are invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tracker_id": int(self.tracker_id),
+            "bbox": self.bbox.to_list(),
+            "confidence": float(self.confidence),
+            "class_id": int(self.class_id),
+            "class_name": self.class_name,
+            "detection_index": self.detection_index,
+            "age_frames": int(self.age_frames),
+            "hits": int(self.hits),
+            "time_since_update": int(self.time_since_update),
+            "is_confirmed": bool(self.is_confirmed),
+        }
+
+
+@dataclass(slots=True)
+class Observation:
+    """A source-timestamped, ROI-valid short-term observation."""
+
+    frame_index: int
+    timestamp_sec: float
+    bbox: BBox
+    centroid: Point
+    detector_class: str
+    detector_class_id: int
+    detector_confidence: float
+    tracker_id: int | None
+    embedding: Any = field(default=None, repr=False, compare=False)
+    occluded: bool = False
+
+    def __post_init__(self) -> None:
+        if self.frame_index < 0:
+            raise ValueError("Observation frame_index must be non-negative")
+        if not isfinite(float(self.timestamp_sec)) or float(self.timestamp_sec) < 0:
+            raise ValueError("Observation timestamp_sec must be finite and non-negative")
+        if not str(self.detector_class).strip():
+            raise ValueError("Observation detector_class must not be empty")
+        if isinstance(self.detector_class_id, bool) or int(self.detector_class_id) < 0:
+            raise ValueError("Observation detector_class_id must be non-negative")
+        if not isfinite(float(self.detector_confidence)) or not 0.0 <= float(self.detector_confidence) <= 1.0:
+            raise ValueError("Observation detector_confidence must be between 0 and 1")
+        if self.tracker_id is not None and (
+            isinstance(self.tracker_id, bool) or int(self.tracker_id) < 0
+        ):
+            raise ValueError("Observation tracker_id must be a non-negative integer")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "frame_index": int(self.frame_index),
+            "timestamp_sec": float(self.timestamp_sec),
+            "bbox": self.bbox.to_list(),
+            "centroid": self.centroid.to_list(),
+            "detector_class": self.detector_class,
+            "detector_class_id": int(self.detector_class_id),
+            "detector_confidence": float(self.detector_confidence),
+            "tracker_id": self.tracker_id,
+            "occluded": bool(self.occluded),
+        }
+
+
 def _intervals(values: Iterable[Sequence[Any]] | None) -> tuple[tuple[float, float], ...]:
     if values is None:
         return ()

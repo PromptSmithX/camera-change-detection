@@ -37,6 +37,11 @@ models/
 *.onnx
 *.ckpt
 
+# The perception adapter package is source code, not a model artifact.
+!src/change_detection/infrastructure/models/
+!src/change_detection/infrastructure/models/__init__.py
+!src/change_detection/infrastructure/models/yolo.py
+
 # Secrets and local configuration
 .env
 .env.*

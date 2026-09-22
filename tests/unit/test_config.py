@@ -55,3 +55,30 @@ sample_count = 4
     assert config.source.type == "image_sequence"
     assert config.source.frame_pattern == "*.bmp"
     assert config.calibration.sample_count == 4
+
+
+def test_m2_perception_config_round_trips_and_validates():
+    config = validate_config(
+        {
+            "runtime": {"processing_fps": 5},
+            "perception": {
+                "enabled": True,
+                "detector": {
+                    "model": "weights/model.pt",
+                    "confidence": 0.4,
+                    "classes": [0, 2, 2],
+                },
+                "tracker": {
+                    "lost_track_buffer": 15,
+                    "minimum_consecutive_frames": 2,
+                },
+            },
+        }
+    )
+    assert config.perception.enabled is True
+    assert config.perception.detector.classes == (0, 2)
+    assert config.perception.tracker.lost_track_buffer == 15
+    assert validate_config(config.to_dict()).runtime.processing_fps == 5.0
+
+    with pytest.raises(ConfigValidationError, match="processing_fps"):
+        validate_config({"runtime": {"processing_fps": 0}})
