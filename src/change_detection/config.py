@@ -412,6 +412,205 @@ class TrackerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class EncoderConfig:
+    """Configuration for the optional M3 appearance encoder."""
+
+    enabled: bool = False
+    name: str = "dinov2"
+    model: str = "dinov2_vits14"
+    repository: str = "facebookresearch/dinov2"
+    device: str | None = None
+    input_size: int = 224
+    batch_size: int = 8
+    semantic_refresh_fps: float = 2.5
+    crop_padding_ratio: float = 0.10
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "EncoderConfig":
+        _reject_unknown(
+            value,
+            {
+                "enabled",
+                "name",
+                "model",
+                "repository",
+                "device",
+                "input_size",
+                "batch_size",
+                "semantic_refresh_fps",
+                "crop_padding_ratio",
+            },
+            name="perception.encoder",
+        )
+        enabled = value.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError("perception.encoder.enabled must be boolean")
+        name = str(value.get("name", "dinov2")).strip()
+        if name != "dinov2":
+            raise ConfigValidationError("perception.encoder.name must be 'dinov2' in M3")
+        model = str(value.get("model", "dinov2_vits14")).strip()
+        if not model:
+            raise ConfigValidationError("perception.encoder.model must not be empty")
+        repository = str(value.get("repository", "facebookresearch/dinov2")).strip()
+        if not repository:
+            raise ConfigValidationError("perception.encoder.repository must not be empty")
+        device_value = value.get("device")
+        device = str(device_value).strip() if device_value not in (None, "") else None
+        integer_values = {"input_size": value.get("input_size", 224), "batch_size": value.get("batch_size", 8)}
+        parsed: dict[str, int] = {}
+        for field_name, raw_value in integer_values.items():
+            if isinstance(raw_value, bool):
+                raise ConfigValidationError(f"perception.encoder.{field_name} must be a positive integer")
+            try:
+                parsed[field_name] = int(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise ConfigValidationError(
+                    f"perception.encoder.{field_name} must be a positive integer"
+                ) from exc
+            if parsed[field_name] < 1:
+                raise ConfigValidationError(f"perception.encoder.{field_name} must be a positive integer")
+        padding = _finite_number(
+            value.get("crop_padding_ratio", 0.10),
+            name="perception.encoder.crop_padding_ratio",
+            maximum=1.0,
+        )
+        return cls(
+            enabled=enabled,
+            name=name,
+            model=model,
+            repository=repository,
+            device=device,
+            input_size=parsed["input_size"],
+            batch_size=parsed["batch_size"],
+            semantic_refresh_fps=_finite_number(
+                value.get("semantic_refresh_fps", 2.5),
+                name="perception.encoder.semantic_refresh_fps",
+                minimum=0.000001,
+            ),
+            crop_padding_ratio=padding,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AssociationConfig:
+    """Model-independent M3 identity-association settings."""
+
+    appearance_weight: float = 0.50
+    spatial_weight: float = 0.20
+    size_weight: float = 0.15
+    class_weight: float = 0.15
+    min_appearance_similarity: float = 0.65
+    min_total_score: float = 0.70
+    ambiguity_margin: float = 0.05
+    require_same_class: bool = True
+    max_reid_seconds: float = 3.0
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "AssociationConfig":
+        _reject_unknown(
+            value,
+            {
+                "appearance_weight",
+                "spatial_weight",
+                "size_weight",
+                "class_weight",
+                "min_appearance_similarity",
+                "min_total_score",
+                "ambiguity_margin",
+                "require_same_class",
+                "max_reid_seconds",
+            },
+            name="association",
+        )
+        require_same_class = value.get("require_same_class", True)
+        if not isinstance(require_same_class, bool):
+            raise ConfigValidationError("association.require_same_class must be boolean")
+        weights = {
+            field_name: _finite_number(value.get(field_name, default), name=f"association.{field_name}", maximum=1.0)
+            for field_name, default in (
+                ("appearance_weight", 0.50),
+                ("spatial_weight", 0.20),
+                ("size_weight", 0.15),
+                ("class_weight", 0.15),
+            )
+        }
+        if abs(sum(weights.values()) - 1.0) > 1e-6:
+            raise ConfigValidationError("association weights must sum to 1.0")
+        return cls(
+            **weights,
+            min_appearance_similarity=_finite_number(
+                value.get("min_appearance_similarity", 0.65),
+                name="association.min_appearance_similarity",
+                maximum=1.0,
+            ),
+            min_total_score=_finite_number(
+                value.get("min_total_score", 0.70),
+                name="association.min_total_score",
+                maximum=1.0,
+            ),
+            ambiguity_margin=_finite_number(
+                value.get("ambiguity_margin", 0.05),
+                name="association.ambiguity_margin",
+                maximum=1.0,
+            ),
+            require_same_class=require_same_class,
+            max_reid_seconds=_finite_number(
+                value.get("max_reid_seconds", 3.0),
+                name="association.max_reid_seconds",
+                minimum=0.000001,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryConfig:
+    missing_grace_seconds: float = 1.0
+    observation_history_size: int = 30
+    embedding_history_size: int = 10
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "MemoryConfig":
+        _reject_unknown(
+            value,
+            {"missing_grace_seconds", "observation_history_size", "embedding_history_size"},
+            name="memory",
+        )
+        parsed: dict[str, int] = {}
+        for field_name, default in (("observation_history_size", 30), ("embedding_history_size", 10)):
+            raw_value = value.get(field_name, default)
+            if isinstance(raw_value, bool):
+                raise ConfigValidationError(f"memory.{field_name} must be a positive integer")
+            try:
+                parsed[field_name] = int(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise ConfigValidationError(f"memory.{field_name} must be a positive integer") from exc
+            if parsed[field_name] < 1:
+                raise ConfigValidationError(f"memory.{field_name} must be a positive integer")
+        return cls(
+            missing_grace_seconds=_finite_number(
+                value.get("missing_grace_seconds", 1.0),
+                name="memory.missing_grace_seconds",
+                minimum=0.000001,
+            ),
+            **parsed,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BaselineConfig:
+    """Optional baseline reference used by the M3 runtime."""
+
+    path: str | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "BaselineConfig":
+        _reject_unknown(value, {"path"}, name="baseline")
+        raw_path = value.get("path")
+        path = str(raw_path).strip() if raw_path not in (None, "") else None
+        return cls(path=path)
+
+
+@dataclass(frozen=True, slots=True)
 class PerceptionConfig:
     """M2 perception configuration.
 
@@ -422,10 +621,11 @@ class PerceptionConfig:
     enabled: bool = False
     detector: DetectorConfig = DetectorConfig()
     tracker: TrackerConfig = TrackerConfig()
+    encoder: EncoderConfig = EncoderConfig()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "PerceptionConfig":
-        _reject_unknown(value, {"enabled", "detector", "tracker"}, name="perception")
+        _reject_unknown(value, {"enabled", "detector", "tracker", "encoder"}, name="perception")
         enabled = value.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ConfigValidationError("perception.enabled must be boolean")
@@ -436,6 +636,9 @@ class PerceptionConfig:
             ),
             tracker=TrackerConfig.from_mapping(
                 _mapping(value.get("tracker", {}), name="perception.tracker")
+            ),
+            encoder=EncoderConfig.from_mapping(
+                _mapping(value.get("encoder", {}), name="perception.encoder")
             ),
         )
 
@@ -452,6 +655,9 @@ class SystemConfig:
     stability: StabilityConfig = StabilityConfig()
     runtime: RuntimeConfig = RuntimeConfig()
     perception: PerceptionConfig = PerceptionConfig()
+    association: AssociationConfig = AssociationConfig()
+    memory: MemoryConfig = MemoryConfig()
+    baseline: BaselineConfig = BaselineConfig()
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -467,6 +673,9 @@ class SystemConfig:
             "stability": asdict(self.stability),
             "runtime": asdict(self.runtime),
             "perception": asdict(self.perception),
+            "association": asdict(self.association),
+            "memory": asdict(self.memory),
+            "baseline": asdict(self.baseline),
         }
         # An empty source section is the serializable representation of the
         # intentionally unconfigured default SourceConfig.  This keeps
@@ -492,6 +701,9 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
             "stability",
             "runtime",
             "perception",
+            "association",
+            "memory",
+            "baseline",
         },
         name="root",
     )
@@ -529,6 +741,13 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
     perception = PerceptionConfig.from_mapping(
         _mapping(value.get("perception", {}), name="perception")
     )
+    if perception.encoder.enabled and not perception.enabled:
+        raise ConfigValidationError("perception.encoder.enabled requires perception.enabled=true")
+    association = AssociationConfig.from_mapping(
+        _mapping(value.get("association", {}), name="association")
+    )
+    memory = MemoryConfig.from_mapping(_mapping(value.get("memory", {}), name="memory"))
+    baseline = BaselineConfig.from_mapping(_mapping(value.get("baseline", {}), name="baseline"))
     return SystemConfig(
         dataset_version=dataset_version,
         forgotten=forgotten,
@@ -540,6 +759,9 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
         stability=stability,
         runtime=runtime,
         perception=perception,
+        association=association,
+        memory=memory,
+        baseline=baseline,
     )
 
 

@@ -82,3 +82,19 @@ def test_m2_perception_config_round_trips_and_validates():
 
     with pytest.raises(ConfigValidationError, match="processing_fps"):
         validate_config({"runtime": {"processing_fps": 0}})
+
+
+def test_m3_identity_config_requires_perception_and_validates_weights():
+    config = validate_config(
+        {
+            "perception": {"enabled": True, "encoder": {"enabled": True}},
+            "baseline": {"path": "runs/m3/baseline/baseline.json"},
+            "association": {"appearance_weight": 0.5, "spatial_weight": 0.2, "size_weight": 0.15, "class_weight": 0.15},
+        }
+    )
+    assert config.perception.encoder.model == "dinov2_vits14"
+    assert config.memory.missing_grace_seconds == 1.0
+    with pytest.raises(ConfigValidationError, match="requires perception"):
+        validate_config({"perception": {"encoder": {"enabled": True}}})
+    with pytest.raises(ConfigValidationError, match="weights must sum"):
+        validate_config({"association": {"appearance_weight": 0.4}})

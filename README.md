@@ -122,3 +122,22 @@ For CPU fallback, set `perception.detector.device` to `"cpu"`.
 M2 writes `metadata.json`, `observations.jsonl`, and `annotated.mp4` under
 `runs/`. It exposes only short-term `tracker_id`; persistent identity and event
 logic start in M3/M4.
+
+## M3 identity quickstart
+
+M3 keeps the M2 runner and adds frozen DINOv2 appearance embeddings,
+association, and persistent object memory. Install the identity extra after
+installing the CUDA-compatible Torch wheel described above:
+
+```text
+python -m pip install -e ".[perception,identity]"
+python tools/calibrate.py --config configs/m3.example.json --output runs/m3/baseline
+python tools/run_perception.py --config configs/m3.example.json --output runs/m3/example
+```
+
+The first calibration downloads the official `dinov2_vits14` checkpoint to
+`runs/torch-hub/`; later runs use the cache. M3 calibration writes a schema-v2
+baseline containing persistent baseline IDs and embeddings. M3 runtime keeps
+the M2 `observations.jsonl` contract and additionally writes `identity.jsonl`
+with association candidates, score breakdowns, object IDs, and state
+transitions. Raw embeddings are not written to run logs.

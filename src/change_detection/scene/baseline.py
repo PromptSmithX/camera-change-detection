@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from change_detection.dataset.io import read_json, sha256_file, write_json
-from change_detection.domain import FrameContext, SourceMetadata
+from change_detection.domain import BaselineObject, FrameContext, SourceMetadata
 
 from .roi import BBoxROI, roi_from_mapping
 from .stability import StabilitySummary
@@ -38,11 +38,7 @@ def _safe_reference_path(metadata_path: Path, relative_path: str) -> Path:
 
 @dataclass(slots=True)
 class SceneBaseline:
-    """Reference scene plus optional M2 detector records.
-
-    ``baseline_objects`` contains detector-level records only.  Persistent
-    object identity and appearance memory are intentionally deferred to M3.
-    """
+    """Reference scene plus optional detector or M3 identity records."""
 
     source: SourceMetadata
     roi: BBoxROI
@@ -58,10 +54,10 @@ class SceneBaseline:
     schema_version: int = 1
     reference_image_path: str = "reference.png"
     reference_image_sha256: str | None = None
-    baseline_objects: tuple[dict[str, Any], ...] = ()
+    baseline_objects: tuple[BaselineObject | dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version not in {1, 2}:
             raise BaselineIntegrityError(
                 f"Unsupported SceneBaseline schema version: {self.schema_version}"
             )
@@ -73,6 +69,10 @@ class SceneBaseline:
             raise BaselineIntegrityError("reference frame must be one of sampled frames")
         if self.roi.source_width != self.source.width or self.roi.source_height != self.source.height:
             raise BaselineIntegrityError("ROI dimensions do not match source metadata")
+        if self.schema_version == 2 and not all(
+            isinstance(item, BaselineObject) for item in self.baseline_objects
+        ):
+            raise BaselineIntegrityError("SceneBaseline schema v2 requires identity baseline objects")
 
     @classmethod
     def from_calibration(
@@ -126,8 +126,26 @@ class SceneBaseline:
                 "image_sha256": self.reference_image_sha256,
             },
             "stability": self.stability.to_dict(),
-            "baseline_objects": [dict(item) for item in self.baseline_objects],
+            "baseline_objects": [
+                item.to_dict() if isinstance(item, BaselineObject) else dict(item)
+                for item in self.baseline_objects
+            ],
         }
+
+    def set_identity_baseline(self, objects: tuple[BaselineObject, ...]) -> None:
+        """Upgrade this in-memory calibration result to the M3 baseline schema."""
+
+        self.schema_version = 2
+        self.baseline_objects = objects
+
+    def identity_objects(self) -> tuple[BaselineObject, ...]:
+        if self.schema_version != 2:
+            raise BaselineIntegrityError(
+                "M3 requires SceneBaseline schema v2; recalibrate with perception.encoder.enabled=true"
+            )
+        if not all(isinstance(item, BaselineObject) for item in self.baseline_objects):
+            raise BaselineIntegrityError("SceneBaseline schema v2 has invalid identity objects")
+        return tuple(self.baseline_objects)  # type: ignore[return-value]
 
     def save(self, directory: str | Path) -> Path:
         """Write ``baseline.json`` and a lossless ``reference.png``."""
@@ -151,7 +169,8 @@ class SceneBaseline:
         if metadata_path.is_dir():
             metadata_path = metadata_path / "baseline.json"
         payload = read_json(metadata_path)
-        if int(payload.get("schema_version", -1)) != 1:
+        schema_version = int(payload.get("schema_version", -1))
+        if schema_version not in {1, 2}:
             raise BaselineIntegrityError("Unsupported or missing SceneBaseline schema_version")
         source = SourceMetadata.from_dict(payload["source"])
         roi = roi_from_mapping(
@@ -190,7 +209,12 @@ class SceneBaseline:
             reference_image=None,
             reference_image_path=reference_path,
             reference_image_sha256=expected_hash,
-            baseline_objects=tuple(dict(item) for item in payload.get("baseline_objects", [])),
+            schema_version=schema_version,
+            baseline_objects=(
+                tuple(BaselineObject.from_dict(dict(item)) for item in payload.get("baseline_objects", []))
+                if schema_version == 2
+                else tuple(dict(item) for item in payload.get("baseline_objects", []))
+            ),
         )
         return baseline
 
