@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from change_detection.domain import Detection, Track
+from change_detection.domain import Detection, Embedding, Observation, Track
 
 
 class PerceptionDependencyError(RuntimeError):
@@ -23,3 +23,9 @@ class Tracker(Protocol):
     def update(self, detections: list[Detection], frame: Any) -> list[Track]: ...
 
     def reset(self) -> None: ...
+
+
+class FeatureEncoder(Protocol):
+    """Enrich observations with appearance embeddings without leaking a model."""
+
+    def encode(self, frame: Any, observations: list[Observation], roi_bbox: Any) -> list[Embedding]: ...

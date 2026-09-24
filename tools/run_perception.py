@@ -16,9 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from change_detection.config import ConfigValidationError, load_config
-from change_detection.infrastructure.models import YoloDetector
+from change_detection.dataset.io import sha256_file
+from change_detection.infrastructure.models import DinoV2Encoder, YoloDetector
 from change_detection.infrastructure.tracking import ByteTrackAdapter
-from change_detection.perception import PerceptionDependencyError
+from change_detection.perception import EmbeddingRefresher, PerceptionDependencyError
+from change_detection.association import AssociationEngine
+from change_detection.memory import ObjectMemory
 from change_detection.pipeline import (
     PerceptionRunError,
     PerceptionRunner,
@@ -27,6 +30,7 @@ from change_detection.pipeline import (
     resolve_input,
 )
 from change_detection.sources import SourceError
+from change_detection.scene import BaselineIntegrityError, SceneBaseline
 
 
 def _resolve_output(root: Path, value: str | Path) -> Path:
@@ -43,6 +47,12 @@ def _prepare_runtime_environment(root: Path) -> None:
     config_root = root / "runs" / "ultralytics-config"
     (config_root / "Ultralytics").mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("YOLO_CONFIG_DIR", str(config_root))
+
+
+def _torch_cache(root: Path) -> Path:
+    cache = root / "runs" / "torch-hub"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
 
 
 def _resolve_model(root: Path, model: str) -> str:
@@ -89,19 +99,61 @@ def main() -> int:
             minimum_matching_threshold=tracker_config.minimum_matching_threshold,
             minimum_consecutive_frames=tracker_config.minimum_consecutive_frames,
         )
+        embedding_refresher = None
+        association_engine = None
+        object_memory = None
+        identity_metadata = None
+        if config.perception.encoder.enabled:
+            if not config.baseline.path:
+                raise ValueError("M3 requires baseline.path when perception.encoder.enabled=true")
+            baseline_path = resolve_input(root, config.baseline.path)
+            baseline = SceneBaseline.load(baseline_path)
+            if baseline.source.source_id != source.metadata.source_id:
+                raise ValueError("M3 baseline source_id does not match runtime source")
+            if (baseline.source.width, baseline.source.height) != (source.metadata.width, source.metadata.height):
+                raise ValueError("M3 baseline dimensions do not match runtime source")
+            if baseline.roi.bbox != roi.bbox:
+                raise ValueError("M3 baseline ROI does not match runtime ROI")
+            encoder_config = config.perception.encoder
+            encoder = DinoV2Encoder(
+                encoder_config.model,
+                repository=encoder_config.repository,
+                device=encoder_config.device or detector_config.device,
+                input_size=encoder_config.input_size,
+                batch_size=encoder_config.batch_size,
+                crop_padding_ratio=encoder_config.crop_padding_ratio,
+                cache_dir=_torch_cache(root),
+            )
+            embedding_refresher = EmbeddingRefresher(
+                encoder,
+                semantic_refresh_fps=encoder_config.semantic_refresh_fps,
+            )
+            association_engine = AssociationEngine(config.association)
+            object_memory = ObjectMemory(baseline.identity_objects(), config=config.memory)
+            identity_metadata = {
+                "baseline_path": str(baseline_path),
+                "baseline_sha256": sha256_file(baseline_path),
+                "baseline_schema_version": baseline.schema_version,
+            }
         with source:
+            run_payload = {
+                "config_path": str(config_path.resolve()),
+                "config": config.to_dict(),
+            }
+            if identity_metadata is not None:
+                run_payload["identity"] = identity_metadata
             result = PerceptionRunner(
                 source=source,
                 roi=roi,
                 detector=detector,
                 tracker=tracker,
                 processing_fps=config.runtime.processing_fps,
+                embedding_refresher=embedding_refresher,
+                association_engine=association_engine,
+                object_memory=object_memory,
             ).run(
                 _resolve_output(root, args.output),
-                run_metadata={
-                    "config_path": str(config_path.resolve()),
-                    "config": config.to_dict(),
-                },
+                run_metadata=run_payload,
             )
         print(
             json.dumps(
@@ -114,6 +166,8 @@ def main() -> int:
                     "detection_count": result.detection_count,
                     "track_count": result.track_count,
                     "observation_count": result.observation_count,
+                    "identity": str(result.identity_path) if result.identity_path else None,
+                    "identity_assignment_count": result.identity_assignment_count,
                 },
                 indent=2,
             )
@@ -123,6 +177,7 @@ def main() -> int:
         ConfigValidationError,
         PerceptionDependencyError,
         PerceptionRunError,
+        BaselineIntegrityError,
         SourceError,
         OSError,
         ValueError,

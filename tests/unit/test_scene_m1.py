@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from change_detection.config import CalibrationConfig, StabilityConfig, validate_config
-from change_detection.domain import FrameContext, SourceMetadata
+from change_detection.domain import BaselineObject, BBox, FrameContext, SourceMetadata
 from change_detection.scene import (
     BBoxROI,
     BaselineIntegrityError,
@@ -157,6 +157,28 @@ def test_calibration_rejects_moving_scene_with_diagnostics():
     with pytest.raises(CalibrationError, match="not stable") as error:
         service.calibrate(source, _roi())
     assert error.value.diagnostics["reason"] == "unstable_scene"
+
+
+def test_scene_baseline_v2_round_trips_identity_objects(tmp_path: Path):
+    image = np.full((24, 32, 3), 100, dtype=np.uint8)
+    source = _FakeSource([image.copy() for _ in range(12)])
+    baseline = _calibration_service().calibrate(source, _roi()).baseline
+    baseline.set_identity_baseline(
+        (
+            BaselineObject(
+                "baseline-id",
+                BBox(1, 1, 10, 10),
+                0,
+                "person",
+                0.8,
+                (1.0, 0.0),
+            ),
+        )
+    )
+    path = baseline.save(tmp_path / "m3-baseline")
+    loaded = SceneBaseline.load(path)
+    assert loaded.schema_version == 2
+    assert loaded.identity_objects()[0].object_id == "baseline-id"
 
 
 def test_m1_config_accepts_json_shape_and_rejects_invalid_source():

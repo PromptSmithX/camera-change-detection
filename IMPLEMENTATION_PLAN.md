@@ -123,21 +123,21 @@ src/.../evaluation/
 
 ## Tasks
 
-- [ ] Crop policy + padding.
-- [ ] Encoder interface.
-- [ ] DINOv2 adapter.
-- [ ] Appearance similarity.
-- [ ] Spatial/size/class similarity.
-- [ ] Gating.
-- [ ] Assignment matching.
-- [ ] ObjectMemory implementation.
-- [ ] Observation history.
+- [x] Crop policy + padding.
+- [x] Encoder interface.
+- [x] DINOv2 adapter.
+- [x] Appearance similarity.
+- [x] Spatial/size/class similarity.
+- [x] Gating.
+- [x] Assignment matching.
+- [x] ObjectMemory implementation.
+- [x] Observation history.
 
 ## Exit criteria
 
-- [ ] Same object giữ `object_id` dù `tracker_id` đổi trong deterministic test.
-- [ ] Short dropout không tạo object mới.
-- [ ] Association debug log có score breakdown.
+- [x] Same object giữ `object_id` dù `tracker_id` đổi trong deterministic test.
+- [x] Short dropout không tạo object mới.
+- [x] Association debug log có score breakdown.
 
 ---
 
@@ -343,3 +343,14 @@ run with `weights/yolov8s.pt` on the RTX 3050 CUDA device: 900 processed
 frames, 627 detections, and 462 short-term tracks. Artifacts are under
 `runs/m2/rtx3050/`; automatic GitHub weight download is not part of the
 repository workflow.
+
+## M3 implementation status (2026-09-23) — IMPLEMENTED
+
+M3 adds frozen DINOv2 ViT-S/14 embeddings, deterministic Hungarian association,
+and bounded persistent object memory without changing the M2 observation
+artifact schema. The deterministic suite covers tracker ID switch, short
+dropout, stale transitions, DINO crop/preprocess behavior, M3 baseline schema
+v2, and identity debug artifacts. The real GPU smoke test passed with the
+official DINOv2 checkpoint cached in `runs/torch-hub/`: 900 frames processed,
+627 detections, 462 observations, and 462 persistent identity assignments.
+Artifacts are under `runs/m3/baseline/` and `runs/m3/smoke/`.

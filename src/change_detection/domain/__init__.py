@@ -15,6 +15,7 @@ from .contracts import (
     can_transition_quality,
 )
 from .frames import FrameContext, SourceMetadata
+from .memory import BaselineObject, Embedding, MemoryObject, ObjectState, embedding_from_value
 
 __all__ = [
     "AnnotationStatus",
@@ -31,4 +32,9 @@ __all__ = [
     "can_transition_quality",
     "FrameContext",
     "SourceMetadata",
+    "BaselineObject",
+    "Embedding",
+    "MemoryObject",
+    "ObjectState",
+    "embedding_from_value",
 ]
