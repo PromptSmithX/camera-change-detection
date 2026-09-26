@@ -53,9 +53,11 @@ class ObjectMemory:
     def objects(self) -> tuple[MemoryObject, ...]:
         return tuple(self._objects[key] for key in sorted(self._objects))
 
-    def reset(self) -> None:
+    def reset(self, *, timestamp_sec: float = 0.0) -> None:
+        if timestamp_sec < 0:
+            raise ValueError("timestamp_sec must be non-negative")
         self._objects = {
-            item.object_id: MemoryObject.from_baseline(item, timestamp_sec=0.0)
+            item.object_id: MemoryObject.from_baseline(item, timestamp_sec=timestamp_sec)
             for item in self._baseline
         }
 

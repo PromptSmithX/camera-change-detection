@@ -1,0 +1,424 @@
+"""Pure deterministic FSMs for forgotten and moved-object events."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import hypot
+from typing import Callable
+from uuid import uuid4
+
+from change_detection.config import ForgottenEventConfig, MovedEventConfig
+from change_detection.domain import (
+    BBox,
+    EventAction,
+    EventActionType,
+    EventLifecycle,
+    EventRecord,
+    EventType,
+    MemoryObject,
+    MovementOutcome,
+    Observation,
+    ObjectState,
+)
+from change_detection.memory import MemoryUpdateResult, ObjectMemory
+from change_detection.scene import SceneStatus
+
+
+def _center(bbox: BBox) -> tuple[float, float]:
+    return (float(bbox.x1 + bbox.x2) / 2.0, float(bbox.y1 + bbox.y2) / 2.0)
+
+
+def _area_change(left: BBox, right: BBox) -> float:
+    return abs(float(left.area - right.area)) / max(float(left.area), 1.0)
+
+
+def _displacement_ratio(left: BBox, right: BBox, roi_bbox: BBox) -> float:
+    x1, y1 = _center(left)
+    x2, y2 = _center(right)
+    diagonal = max(1.0, hypot(float(roi_bbox.width), float(roi_bbox.height)))
+    return hypot(x2 - x1, y2 - y1) / diagonal
+
+
+def _history_bbox(item: object) -> BBox | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        return BBox.from_value(item.get("bbox"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _history_time(item: object) -> float | None:
+    if not isinstance(item, dict):
+        return None
+    value = item.get("timestamp_sec")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_egress_evidence(memory: MemoryObject, roi_bbox: BBox, config: MovedEventConfig) -> bool:
+    """Require a visible outward trajectory near an ROI edge before left_scene."""
+
+    history = memory.observation_history
+    if len(history) < 2:
+        return False
+    edge_x = max(1.0, roi_bbox.width * config.egress_edge_ratio)
+    edge_y = max(1.0, roi_bbox.height * config.egress_edge_ratio)
+    for previous, current in zip(history[:-1], history[1:], strict=False):
+        previous_bbox = _history_bbox(previous)
+        current_bbox = _history_bbox(current)
+        previous_time = _history_time(previous)
+        current_time = _history_time(current)
+        if (
+            previous_bbox is None
+            or current_bbox is None
+            or previous_time is None
+            or current_time is None
+        ):
+            continue
+        delta = current_time - previous_time
+        if delta <= 0:
+            continue
+        previous_center = _center(previous_bbox)
+        current_center = _center(current_bbox)
+        velocity_x = (current_center[0] - previous_center[0]) / delta
+        velocity_y = (current_center[1] - previous_center[1]) / delta
+        if current_bbox.x1 - roi_bbox.x1 <= edge_x and velocity_x <= -config.min_outward_speed_px_per_sec:
+            return True
+        if roi_bbox.x2 - current_bbox.x2 <= edge_x and velocity_x >= config.min_outward_speed_px_per_sec:
+            return True
+        if current_bbox.y1 - roi_bbox.y1 <= edge_y and velocity_y <= -config.min_outward_speed_px_per_sec:
+            return True
+        if roi_bbox.y2 - current_bbox.y2 <= edge_y and velocity_y >= config.min_outward_speed_px_per_sec:
+            return True
+    return False
+
+
+@dataclass(slots=True)
+class _ForgottenState:
+    event: EventRecord
+    anchor_bbox: BBox
+    last_observed_sec: float
+    eligible_seconds: float = 0.0
+    candidate_created: bool = False
+    confirmed: bool = False
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
+class _MovedState:
+    event: EventRecord
+    last_evidence_sec: float
+    eligible_seconds: float = 0.0
+    candidate_created: bool = False
+    confirmed: bool = False
+
+
+class EventEngine:
+    """Coordinate independent M4/M5 state machines over ``ObjectMemory``."""
+
+    def __init__(
+        self,
+        *,
+        forgotten: ForgottenEventConfig | None = None,
+        moved: MovedEventConfig | None = None,
+        event_id_factory: Callable[[], str] | None = None,
+    ) -> None:
+        self.forgotten = forgotten or ForgottenEventConfig()
+        self.moved = moved or MovedEventConfig()
+        self._event_id_factory = event_id_factory or (lambda: f"evt_{uuid4().hex}")
+        self._forgotten_states: dict[str, _ForgottenState] = {}
+        self._moved_states: dict[str, _MovedState] = {}
+        self._last_timestamp_sec: float | None = None
+
+    def reset(self) -> None:
+        self._forgotten_states.clear()
+        self._moved_states.clear()
+        self._last_timestamp_sec = None
+
+    @staticmethod
+    def _action(
+        action: EventActionType,
+        event: EventRecord,
+        reason: str | None = None,
+    ) -> EventAction:
+        return EventAction(action, event, reason)
+
+    def _stable_new_object(
+        self,
+        state: _ForgottenState,
+        observation: Observation,
+        roi_bbox: BBox,
+    ) -> bool:
+        anchor_x, anchor_y = _center(state.anchor_bbox)
+        current_x, current_y = _center(observation.bbox)
+        diagonal = max(1.0, hypot(float(roi_bbox.width), float(roi_bbox.height)))
+        jitter = hypot(current_x - anchor_x, current_y - anchor_y) / diagonal
+        return (
+            jitter <= self.forgotten.max_centroid_jitter_ratio
+            and _area_change(state.anchor_bbox, observation.bbox)
+            <= self.forgotten.max_area_change_ratio
+        )
+
+    def _update_forgotten(
+        self,
+        memory: MemoryObject,
+        observation: Observation | None,
+        *,
+        timestamp_sec: float,
+        scene_status: SceneStatus,
+        roi_bbox: BBox,
+    ) -> list[EventAction]:
+        actions: list[EventAction] = []
+        state = self._forgotten_states.get(memory.object_id)
+        if observation is not None:
+            if observation.detector_confidence < self.forgotten.min_confidence:
+                # It is still an observation for disappearance purposes, but
+                # it must not contribute the low-confidence interval to the
+                # stability timer when a later high-confidence detection
+                # arrives.
+                if state is not None:
+                    state.last_observed_sec = timestamp_sec
+                return actions
+            if not scene_status.event_logic_enabled:
+                if state is not None:
+                    state.last_observed_sec = timestamp_sec
+                    state.event.after_bbox = observation.bbox
+                return actions
+            if state is None:
+                event = EventRecord(
+                    event_id=self._event_id_factory(),
+                    event_type=EventType.FORGOTTEN_OBJECT,
+                    object_id=memory.object_id,
+                    started_at_sec=timestamp_sec,
+                    confidence=float(observation.detector_confidence),
+                    after_bbox=observation.bbox,
+                )
+                state = _ForgottenState(
+                    event=event,
+                    anchor_bbox=observation.bbox,
+                    last_observed_sec=timestamp_sec,
+                    confidence=float(observation.detector_confidence),
+                )
+                self._forgotten_states[memory.object_id] = state
+            elif not self._stable_new_object(state, observation, roi_bbox) and not state.confirmed:
+                if state.candidate_created:
+                    actions.append(self._action(EventActionType.CANCELLED, state.event, "unstable_object"))
+                self._forgotten_states.pop(memory.object_id, None)
+                return actions
+
+            gap = max(0.0, timestamp_sec - state.last_observed_sec)
+            # A timestamp gap between two observed frames is still positive
+            # evidence that the object remained visible.  ``disappear_grace``
+            # is only the no-observation grace period below; using it here
+            # would freeze the normal timer whenever processing FPS is lower
+            # than the configured grace window.
+            if scene_status.event_logic_enabled:
+                state.eligible_seconds += gap
+            state.last_observed_sec = timestamp_sec
+            state.confidence = max(state.confidence, float(observation.detector_confidence))
+            state.event.after_bbox = observation.bbox
+            state.event.confidence = state.confidence
+
+            if not state.candidate_created and state.eligible_seconds >= self.forgotten.candidate_seconds:
+                state.candidate_created = True
+                state.event.lifecycle = EventLifecycle.CREATED
+                actions.append(self._action(EventActionType.CREATED, state.event, "stable_candidate"))
+            if not state.confirmed and state.eligible_seconds >= self.forgotten.confirm_seconds:
+                state.confirmed = True
+                state.event.confirmed_at_sec = timestamp_sec
+                state.event.lifecycle = EventLifecycle.ACTIVE
+                actions.append(self._action(EventActionType.CONFIRMED, state.event, "stable_confirmed"))
+            return actions
+
+        if state is None:
+            return actions
+        if not scene_status.event_logic_enabled:
+            # Do not let a long anomaly interval look like a disappearance
+            # when normal event logic resumes.
+            state.last_observed_sec = timestamp_sec
+            return actions
+        missing_duration = max(0.0, timestamp_sec - state.last_observed_sec)
+        if missing_duration <= self.forgotten.disappear_grace_seconds:
+            return actions
+        if state.confirmed:
+            state.event.ended_at_sec = timestamp_sec
+            state.event.lifecycle = EventLifecycle.CLOSED
+            actions.append(self._action(EventActionType.CLOSED, state.event, "object_disappeared"))
+        else:
+            actions.append(self._action(EventActionType.CANCELLED, state.event, "short_lived_object"))
+        self._forgotten_states.pop(memory.object_id, None)
+        return actions
+
+    def _update_moved(
+        self,
+        memory: MemoryObject,
+        observation: Observation | None,
+        assignment_score: float | None,
+        current_observations: list[tuple[str, Observation]],
+        *,
+        timestamp_sec: float,
+        scene_status: SceneStatus,
+        roi_bbox: BBox,
+    ) -> list[EventAction]:
+        actions: list[EventAction] = []
+        state = self._moved_states.get(memory.object_id)
+        baseline_bbox = memory.baseline_bbox
+        if baseline_bbox is None:
+            return actions
+        if not scene_status.event_logic_enabled:
+            if state is not None:
+                state.last_evidence_sec = timestamp_sec
+            return actions
+
+        if observation is not None and assignment_score is not None:
+            displaced = _displacement_ratio(baseline_bbox, observation.bbox, roi_bbox) >= self.moved.min_displacement_ratio
+            old_location_occupied = any(
+                object_id != memory.object_id
+                and candidate_observation.bbox.iou(baseline_bbox) >= self.moved.old_location_iou_threshold
+                for object_id, candidate_observation in current_observations
+            )
+            valid_candidate = (
+                displaced
+                and assignment_score >= self.moved.min_identity_score
+                and not old_location_occupied
+            )
+            if not valid_candidate:
+                if state is not None and not state.confirmed:
+                    actions.append(self._action(EventActionType.CANCELLED, state.event, "returned_or_invalid_move"))
+                    self._moved_states.pop(memory.object_id, None)
+                elif state is not None and state.confirmed and not displaced:
+                    state.event.ended_at_sec = timestamp_sec
+                    state.event.lifecycle = EventLifecycle.CLOSED
+                    actions.append(self._action(EventActionType.CLOSED, state.event, "returned_to_baseline"))
+                    self._moved_states.pop(memory.object_id, None)
+                return actions
+
+            if state is None:
+                event = EventRecord(
+                    event_id=self._event_id_factory(),
+                    event_type=EventType.MOVED_OBJECT,
+                    object_id=memory.object_id,
+                    started_at_sec=timestamp_sec,
+                    confidence=float(assignment_score),
+                    before_bbox=baseline_bbox,
+                    after_bbox=observation.bbox,
+                    movement_outcome=MovementOutcome.RELOCATED,
+                )
+                state = _MovedState(event=event, last_evidence_sec=timestamp_sec)
+                self._moved_states[memory.object_id] = state
+            else:
+                state.event.after_bbox = observation.bbox
+                state.event.confidence = max(state.event.confidence, float(assignment_score))
+
+            gap = max(0.0, timestamp_sec - state.last_evidence_sec)
+            if scene_status.event_logic_enabled:
+                state.eligible_seconds += gap
+            state.last_evidence_sec = timestamp_sec
+            if not state.candidate_created:
+                state.candidate_created = True
+                actions.append(self._action(EventActionType.CREATED, state.event, "identity_displaced"))
+            if not state.confirmed and state.eligible_seconds >= self.moved.confirm_seconds:
+                state.confirmed = True
+                state.event.confirmed_at_sec = timestamp_sec
+                state.event.lifecycle = EventLifecycle.ACTIVE
+                actions.append(self._action(EventActionType.CONFIRMED, state.event, "relocated_confirmed"))
+            return actions
+
+        if state is not None and not state.confirmed:
+            if memory.state == ObjectState.PRESENT:
+                return actions
+            if not _has_egress_evidence(memory, roi_bbox, self.moved):
+                if memory.missing_since_sec is not None and timestamp_sec - memory.missing_since_sec > self.moved.missing_grace_seconds:
+                    actions.append(self._action(EventActionType.CANCELLED, state.event, "missing_without_egress"))
+                    self._moved_states.pop(memory.object_id, None)
+                return actions
+
+        if state is not None and state.confirmed:
+            return actions
+
+        if memory.state in {ObjectState.TEMP_MISSING, ObjectState.STALE} and _has_egress_evidence(
+            memory, roi_bbox, self.moved
+        ):
+            missing_since = memory.missing_since_sec
+            if missing_since is None or timestamp_sec - missing_since < self.moved.missing_grace_seconds:
+                return actions
+            if state is None or state.event.movement_outcome != MovementOutcome.LEFT_SCENE:
+                event = EventRecord(
+                    event_id=self._event_id_factory(),
+                    event_type=EventType.MOVED_OBJECT,
+                    object_id=memory.object_id,
+                    started_at_sec=missing_since,
+                    confidence=1.0,
+                    before_bbox=baseline_bbox,
+                    movement_outcome=MovementOutcome.LEFT_SCENE,
+                )
+                state = _MovedState(event=event, last_evidence_sec=timestamp_sec)
+                self._moved_states[memory.object_id] = state
+                actions.append(self._action(EventActionType.CREATED, state.event, "visible_egress"))
+            else:
+                gap = max(0.0, timestamp_sec - state.last_evidence_sec)
+                if scene_status.event_logic_enabled:
+                    state.eligible_seconds += gap
+                state.last_evidence_sec = timestamp_sec
+            if state is not None and not state.confirmed and state.eligible_seconds >= self.moved.confirm_seconds:
+                state.confirmed = True
+                state.event.confirmed_at_sec = timestamp_sec
+                state.event.lifecycle = EventLifecycle.ACTIVE
+                actions.append(self._action(EventActionType.CONFIRMED, state.event, "left_scene_confirmed"))
+        return actions
+
+    def update(
+        self,
+        memory: ObjectMemory,
+        memory_update: MemoryUpdateResult,
+        observations: list[Observation],
+        *,
+        timestamp_sec: float,
+        scene_status: SceneStatus,
+        roi_bbox: BBox,
+    ) -> tuple[EventAction, ...]:
+        """Advance both FSMs using one completed memory update."""
+
+        if self._last_timestamp_sec is not None and timestamp_sec < self._last_timestamp_sec:
+            raise ValueError("EventEngine timestamps must be monotonic")
+        assigned: dict[str, tuple[Observation, float | None]] = {}
+        for assignment in memory_update.assignments:
+            if 0 <= assignment.observation_index < len(observations):
+                assigned[assignment.object_id] = (
+                    observations[assignment.observation_index],
+                    assignment.score,
+                )
+        current_observations = [
+            (object_id, observation)
+            for object_id, (observation, _score) in assigned.items()
+        ]
+        actions: list[EventAction] = []
+        for object_item in memory.objects:
+            observation, score = assigned.get(object_item.object_id, (None, None))
+            if object_item.is_baseline:
+                actions.extend(
+                    self._update_moved(
+                        object_item,
+                        observation,
+                        score,
+                        current_observations,
+                        timestamp_sec=timestamp_sec,
+                        scene_status=scene_status,
+                        roi_bbox=roi_bbox,
+                    )
+                )
+            else:
+                actions.extend(
+                    self._update_forgotten(
+                        object_item,
+                        observation,
+                        timestamp_sec=timestamp_sec,
+                        scene_status=scene_status,
+                        roi_bbox=roi_bbox,
+                    )
+                )
+        self._last_timestamp_sec = timestamp_sec
+        return tuple(actions)

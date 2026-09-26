@@ -141,3 +141,33 @@ baseline containing persistent baseline IDs and embeddings. M3 runtime keeps
 the M2 `observations.jsonl` contract and additionally writes `identity.jsonl`
 with association candidates, score breakdowns, object IDs, and state
 transitions. Raw embeddings are not written to run logs.
+
+## M4/M5 event quickstart
+
+M4/M5 consumes the schema-v2 baseline and adds the deterministic forgotten and
+moved-object FSMs. The reference configuration is
+`configs/m45.example.json`:
+
+```text
+python tools/run_change_detection.py \
+  --config configs/m45.example.json \
+  --output runs/m45/cdnet2014_abandonedbox
+```
+
+The run writes the M2/M3 artifacts plus `events.jsonl`,
+`event_lifecycle.jsonl`, and BEFORE/AFTER images under `snapshots/`. Event
+timers are measured in seconds; `tracker_id` is never used as the persistent
+event identity.
+
+Generate validation metrics per sample and per event type with:
+
+```text
+python tools/benchmark_dataset.py \
+  --manifest data/benchmark/v2/manifest.json \
+  --predictions-dir runs/m45 \
+  --split validation \
+  --output runs/m45/metrics.json
+```
+
+The test split is deliberately opt-in: use the locked manifest and pass
+`--allow-test` explicitly.

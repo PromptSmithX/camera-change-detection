@@ -16,6 +16,7 @@ from .contracts import (
 )
 from .frames import FrameContext, SourceMetadata
 from .memory import BaselineObject, Embedding, MemoryObject, ObjectState, embedding_from_value
+from .events import EventAction, EventActionType, EventLifecycle, EventRecord
 
 __all__ = [
     "AnnotationStatus",
@@ -37,4 +38,8 @@ __all__ = [
     "MemoryObject",
     "ObjectState",
     "embedding_from_value",
+    "EventAction",
+    "EventActionType",
+    "EventLifecycle",
+    "EventRecord",
 ]

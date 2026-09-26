@@ -21,9 +21,36 @@ def test_config_validation_is_model_independent_and_round_trips(tmp_path: Path):
     config = load_config(path)
     assert config.dataset_version == "1.0.0-draft"
     assert config.forgotten.confirm_seconds == 4.0
+    assert config.forgotten.min_confidence == 0.35
+    assert config.moved.min_identity_score == 0.75
     assert config.evaluation.moved_iou_threshold == 0.4
     assert config.to_dict()["evaluation"]["min_temporal_overlap"] == 0.1
     assert validate_config(config.to_dict()).source.type == "video"
+
+
+def test_event_runtime_config_round_trips_start_frame_and_warmup():
+    config = validate_config(
+        {
+            "events": {
+                "forgotten": {
+                    "candidate_seconds": 0.5,
+                    "confirm_seconds": 1.5,
+                    "max_centroid_jitter_ratio": 0.08,
+                },
+                "moved": {
+                    "confirm_seconds": 2.5,
+                    "egress_edge_ratio": 0.2,
+                },
+            },
+            "runtime": {"start_frame": 12, "warmup_seconds": 1.0},
+        }
+    )
+    assert config.forgotten.candidate_seconds == 0.5
+    assert config.forgotten.max_centroid_jitter_ratio == 0.08
+    assert config.moved.egress_edge_ratio == 0.2
+    assert config.runtime.start_frame == 12
+    assert config.runtime.warmup_seconds == 1.0
+    assert validate_config(config.to_dict()).runtime.start_frame == 12
 
 
 def test_config_rejects_invalid_threshold_and_unknown_field():

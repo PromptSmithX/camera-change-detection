@@ -135,10 +135,14 @@ def main() -> int:
                 "baseline_sha256": sha256_file(baseline_path),
                 "baseline_schema_version": baseline.schema_version,
             }
+        start_frame = config.runtime.start_frame
+        if start_frame is not None and source.metadata.media_type != "webcam":
+            source.seek(start_frame)
         with source:
             run_payload = {
                 "config_path": str(config_path.resolve()),
                 "config": config.to_dict(),
+                "monitor_start_frame": start_frame,
             }
             if identity_metadata is not None:
                 run_payload["identity"] = identity_metadata
@@ -148,6 +152,7 @@ def main() -> int:
                 detector=detector,
                 tracker=tracker,
                 processing_fps=config.runtime.processing_fps,
+                warmup_seconds=config.runtime.warmup_seconds,
                 embedding_refresher=embedding_refresher,
                 association_engine=association_engine,
                 object_memory=object_memory,
