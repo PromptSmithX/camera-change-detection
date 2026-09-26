@@ -45,7 +45,14 @@ class AssociationEngine:
 
     def _candidate(self, memory: MemoryObject, observation: Observation, index: int, roi_bbox: BBox, timestamp_sec: float) -> AssociationCandidate:
         score = self._score(memory, observation, roi_bbox)
-        if timestamp_sec - memory.last_seen_sec > self.config.max_reid_seconds:
+        # Baseline objects are seeded at calibration time (timestamp 0 in
+        # memory) while a runtime can legitimately seek to the calibration
+        # reference frame or later.  The first runtime observation must not
+        # be rejected merely because of that absolute timestamp gap.  Once a
+        # baseline object has one runtime observation, the normal re-ID window
+        # protects against stale matches again.
+        baseline_seed = memory.is_baseline and not memory.observation_history
+        if not baseline_seed and timestamp_sec - memory.last_seen_sec > self.config.max_reid_seconds:
             return AssociationCandidate(memory.object_id, index, score, True, "reid_window_expired")
         if self.config.require_same_class and score.class_compatibility == 0.0:
             return AssociationCandidate(memory.object_id, index, score, True, "class_mismatch")

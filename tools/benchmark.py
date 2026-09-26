@@ -1,7 +1,8 @@
 """Run event-level evaluation on canonical JSON records.
 
-The input files may be either arrays of event objects or objects containing an
-``events`` array.  A root ``video_id`` is copied into each event when present.
+The input files may be arrays of event objects, objects containing an
+``events``/``predictions`` array, or runtime JSONL event artifacts. A root
+``video_id`` is copied into each event when present.
 """
 
 from __future__ import annotations
@@ -20,8 +21,25 @@ from change_detection.evaluation.evaluator import EvaluationConfig, evaluate_eve
 
 
 def _load_events(path: Path) -> list[dict[str, Any]]:
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
+    text = path.read_text(encoding="utf-8")
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        # Runtime event artifacts are JSONL while the original evaluator
+        # accepted one JSON array/object.  Support both contracts here so a
+        # single-run smoke output can be evaluated directly.
+        records: list[dict[str, Any]] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid event JSON at {path}:{line_number}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"Event record at {path}:{line_number} must be an object")
+            records.append(record)
+        return records
     if isinstance(value, list):
         return [dict(item) for item in value]
     if not isinstance(value, dict):

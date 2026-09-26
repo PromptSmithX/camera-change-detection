@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from change_detection.dataset.io import write_json
 from change_detection.domain import FrameContext, Observation, Track
+from change_detection.events import EventArtifactWriter, EventEngine, EventStore
 from change_detection.perception import Detector, EmbeddingRefresher, ObservationBuilder, Tracker
 from change_detection.association import AssociationEngine
 from change_detection.memory import ObjectMemory
+from change_detection.scene import SceneStatusProvider, StableSceneStatusProvider
 
 
 class PerceptionRunError(RuntimeError):
@@ -33,6 +36,10 @@ class PerceptionRunResult:
     track_count: int
     observation_count: int
     identity_assignment_count: int = 0
+    events_path: Path | None = None
+    event_lifecycle_path: Path | None = None
+    snapshots_dir: Path | None = None
+    event_count: int = 0
 
 
 def _cv2():
@@ -97,24 +104,41 @@ class PerceptionRunner:
         tracker: Tracker,
         observation_builder: ObservationBuilder | None = None,
         processing_fps: float = 5.0,
+        warmup_seconds: float = 0.0,
         embedding_refresher: EmbeddingRefresher | None = None,
         association_engine: AssociationEngine | None = None,
         object_memory: ObjectMemory | None = None,
+        event_engine: EventEngine | None = None,
+        event_store: EventStore | None = None,
+        scene_status_provider: SceneStatusProvider | None = None,
+        reference_image: Any | None = None,
     ) -> None:
         if float(processing_fps) <= 0:
             raise ValueError("processing_fps must be positive")
+        if not math.isfinite(float(warmup_seconds)) or float(warmup_seconds) < 0:
+            raise ValueError("warmup_seconds must be finite and non-negative")
         self.source = source
         self.roi = roi
         self.detector = detector
         self.tracker = tracker
         self.observation_builder = observation_builder or ObservationBuilder()
         self.processing_fps = float(processing_fps)
+        self.warmup_seconds = float(warmup_seconds)
         identity_parts = (embedding_refresher, association_engine, object_memory)
         if any(item is not None for item in identity_parts) and not all(item is not None for item in identity_parts):
             raise ValueError("M3 requires embedding_refresher, association_engine, and object_memory together")
         self.embedding_refresher = embedding_refresher
         self.association_engine = association_engine
         self.object_memory = object_memory
+        event_parts = (event_engine, event_store)
+        if any(item is not None for item in event_parts) and not all(item is not None for item in event_parts):
+            raise ValueError("Event runtime requires event_engine and event_store together")
+        if event_engine is not None and object_memory is None:
+            raise ValueError("Event runtime requires ObjectMemory")
+        self.event_engine = event_engine
+        self.event_store = event_store
+        self.scene_status_provider = scene_status_provider or StableSceneStatusProvider()
+        self.reference_image = reference_image
 
     def run(self, output_dir: str | Path, *, run_metadata: dict[str, Any] | None = None) -> PerceptionRunResult:
         output_dir = Path(output_dir)
@@ -122,17 +146,32 @@ class PerceptionRunner:
         observations_path = output_dir / "observations.jsonl"
         video_path = output_dir / "annotated.mp4"
         identity_path = output_dir / "identity.jsonl" if self.object_memory is not None else None
+        events_path = output_dir / "events.jsonl" if self.event_engine is not None else None
+        event_lifecycle_path = output_dir / "event_lifecycle.jsonl" if self.event_engine is not None else None
+        snapshots_dir = output_dir / "snapshots" if self.event_engine is not None else None
         metadata_path = output_dir / "metadata.json"
         cv2 = _cv2()
         writer = None
+        event_writer = (
+            EventArtifactWriter(output_dir, reference_image=self.reference_image)
+            if self.event_engine is not None
+            else None
+        )
+        event_writer_finalized = False
         frames_read = frames_processed = detection_count = track_count = observation_count = identity_assignment_count = 0
         started = time.perf_counter()
         next_process_time: float | None = None
+        first_processed_timestamp: float | None = None
         self.tracker.reset()
         if self.embedding_refresher is not None:
             self.embedding_refresher.reset()
         if self.object_memory is not None:
             self.object_memory.reset()
+        if self.event_engine is not None:
+            assert self.event_store is not None
+            self.event_engine.reset()
+            self.event_store.reset()
+            self.scene_status_provider.reset()
 
         try:
             identity_context = (
@@ -153,6 +192,29 @@ class PerceptionRunner:
                     interval = 1.0 / self.processing_fps
                     while next_process_time <= frame.timestamp_sec + 1e-9:
                         next_process_time += interval
+
+                    if first_processed_timestamp is None:
+                        first_processed_timestamp = frame.timestamp_sec
+                        if self.object_memory is not None:
+                            # Baseline records are seeded independently of
+                            # the runtime media clock.  Align them once to
+                            # the first processed frame so a seeked run does
+                            # not look like a long re-ID timeout.
+                            self.object_memory.reset(timestamp_sec=first_processed_timestamp)
+
+                    scene_status = None
+                    if self.event_engine is not None:
+                        scene_status = self.scene_status_provider.update(frame)
+                        if (
+                            self.warmup_seconds > 0
+                            and first_processed_timestamp is not None
+                            and frame.timestamp_sec - first_processed_timestamp < self.warmup_seconds
+                        ):
+                            scene_status = replace(
+                                scene_status,
+                                stable=False,
+                                reason=scene_status.reason or "runtime_warmup",
+                            )
 
                     detections = self.detector.detect(frame.image, self.roi)
                     tracks = self.tracker.update(detections, frame.image)
@@ -189,6 +251,11 @@ class PerceptionRunner:
                                         "encoded_count": refresh.encoded_count,
                                         "reused_count": refresh.reused_count,
                                     },
+                                    **(
+                                        {"scene_status": scene_status.to_dict()}
+                                        if scene_status is not None
+                                        else {}
+                                    ),
                                     "assignments": [
                                         {
                                             **item.to_dict(),
@@ -204,6 +271,27 @@ class PerceptionRunner:
                             )
                             + "\n"
                         )
+                        if self.event_engine is not None:
+                            assert self.event_store is not None and event_writer is not None
+                            assert scene_status is not None
+                            actions = self.event_engine.update(
+                                self.object_memory,
+                                memory_update,
+                                observations,
+                                timestamp_sec=frame.timestamp_sec,
+                                scene_status=scene_status,
+                                roi_bbox=self.roi.bbox,
+                            )
+                            for action in actions:
+                                result = self.event_store.apply(action)
+                                if result is None:
+                                    continue
+                                event_writer.write_lifecycle(result)
+                                if result.public_event is not None:
+                                    event_writer.write_confirmation_snapshot(
+                                        result.public_event,
+                                        frame.image,
+                                    )
                     if writer is None:
                         height, width = frame.image.shape[:2]
                         writer = cv2.VideoWriter(
@@ -234,9 +322,15 @@ class PerceptionRunner:
                     detection_count += len(detections)
                     track_count += len(tracks)
                     observation_count += len(observations)
+            if self.event_engine is not None:
+                assert self.event_store is not None and event_writer is not None
+                event_writer.finalize(self.event_store)
+                event_writer_finalized = True
         finally:
             if writer is not None:
                 writer.release()
+            if event_writer is not None and not event_writer_finalized:
+                event_writer.close()
 
         elapsed = max(0.0, time.perf_counter() - started)
         metadata = {
@@ -244,6 +338,7 @@ class PerceptionRunner:
             "source": self.source.metadata.to_dict(),
             "roi": self.roi.to_dict(),
             "processing_fps_configured": self.processing_fps,
+            "warmup_seconds": self.warmup_seconds,
             "processing_fps_actual": frames_processed / elapsed if elapsed else 0.0,
             "frames_read": frames_read,
             "frames_processed": frames_processed,
@@ -272,6 +367,22 @@ class PerceptionRunner:
                 },
             }
             metadata["artifacts"]["identity"] = identity_path.name if identity_path is not None else None
+        if self.event_engine is not None:
+            assert self.event_store is not None
+            metadata["events"] = {
+                "enabled": True,
+                "confirmed_count": len(self.event_store.confirmed_events),
+                "active_count": len(self.event_store.active_events),
+            }
+            metadata["artifacts"].update(
+                {
+                    "events": events_path.name if events_path is not None else None,
+                    "event_lifecycle": (
+                        event_lifecycle_path.name if event_lifecycle_path is not None else None
+                    ),
+                    "snapshots": snapshots_dir.name if snapshots_dir is not None else None,
+                }
+            )
         write_json(metadata_path, metadata)
         return PerceptionRunResult(
             output_dir=output_dir,
@@ -285,4 +396,8 @@ class PerceptionRunner:
             track_count=track_count,
             observation_count=observation_count,
             identity_assignment_count=identity_assignment_count,
+            events_path=events_path,
+            event_lifecycle_path=event_lifecycle_path,
+            snapshots_dir=snapshots_dir,
+            event_count=(len(self.event_store.confirmed_events) if self.event_store is not None else 0),
         )

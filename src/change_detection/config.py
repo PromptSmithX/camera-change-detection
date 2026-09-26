@@ -59,6 +59,127 @@ class EventTimingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ForgottenEventConfig:
+    """Temporal and stability guards for ``FORGOTTEN_OBJECT``."""
+
+    candidate_seconds: float = 1.0
+    confirm_seconds: float = 4.0
+    disappear_grace_seconds: float = 1.0
+    min_confidence: float = 0.35
+    max_centroid_jitter_ratio: float = 0.03
+    max_area_change_ratio: float = 0.35
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any], *, name: str) -> "ForgottenEventConfig":
+        _reject_unknown(
+            value,
+            {
+                "candidate_seconds",
+                "confirm_seconds",
+                "disappear_grace_seconds",
+                "min_confidence",
+                "max_centroid_jitter_ratio",
+                "max_area_change_ratio",
+            },
+            name=name,
+        )
+        candidate = _finite_number(value.get("candidate_seconds", 1.0), name=f"{name}.candidate_seconds")
+        confirm = _finite_number(value.get("confirm_seconds", 4.0), name=f"{name}.confirm_seconds")
+        grace = _finite_number(
+            value.get("disappear_grace_seconds", 1.0),
+            name=f"{name}.disappear_grace_seconds",
+        )
+        if confirm < candidate:
+            raise ConfigValidationError(f"{name}.confirm_seconds must be >= candidate_seconds")
+        return cls(
+            candidate_seconds=candidate,
+            confirm_seconds=confirm,
+            disappear_grace_seconds=grace,
+            min_confidence=_finite_number(
+                value.get("min_confidence", 0.35),
+                name=f"{name}.min_confidence",
+                maximum=1.0,
+            ),
+            max_centroid_jitter_ratio=_finite_number(
+                value.get("max_centroid_jitter_ratio", 0.03),
+                name=f"{name}.max_centroid_jitter_ratio",
+                maximum=1.0,
+            ),
+            max_area_change_ratio=_finite_number(
+                value.get("max_area_change_ratio", 0.35),
+                name=f"{name}.max_area_change_ratio",
+                maximum=1.0,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MovedEventConfig:
+    """Identity, displacement, and departure guards for ``MOVED_OBJECT``."""
+
+    missing_grace_seconds: float = 1.0
+    confirm_seconds: float = 2.0
+    min_identity_score: float = 0.75
+    min_displacement_ratio: float = 0.05
+    old_location_iou_threshold: float = 0.5
+    egress_edge_ratio: float = 0.10
+    min_outward_speed_px_per_sec: float = 1.0
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any], *, name: str) -> "MovedEventConfig":
+        _reject_unknown(
+            value,
+            {
+                "missing_grace_seconds",
+                "confirm_seconds",
+                "min_identity_score",
+                "min_displacement_ratio",
+                "old_location_iou_threshold",
+                "egress_edge_ratio",
+                "min_outward_speed_px_per_sec",
+            },
+            name=name,
+        )
+        return cls(
+            missing_grace_seconds=_finite_number(
+                value.get("missing_grace_seconds", 1.0),
+                name=f"{name}.missing_grace_seconds",
+                minimum=0.000001,
+            ),
+            confirm_seconds=_finite_number(
+                value.get("confirm_seconds", 2.0),
+                name=f"{name}.confirm_seconds",
+                minimum=0.000001,
+            ),
+            min_identity_score=_finite_number(
+                value.get("min_identity_score", 0.75),
+                name=f"{name}.min_identity_score",
+                maximum=1.0,
+            ),
+            min_displacement_ratio=_finite_number(
+                value.get("min_displacement_ratio", 0.05),
+                name=f"{name}.min_displacement_ratio",
+                maximum=1.0,
+            ),
+            old_location_iou_threshold=_finite_number(
+                value.get("old_location_iou_threshold", 0.5),
+                name=f"{name}.old_location_iou_threshold",
+                maximum=1.0,
+            ),
+            egress_edge_ratio=_finite_number(
+                value.get("egress_edge_ratio", 0.10),
+                name=f"{name}.egress_edge_ratio",
+                maximum=1.0,
+            ),
+            min_outward_speed_px_per_sec=_finite_number(
+                value.get("min_outward_speed_px_per_sec", 1.0),
+                name=f"{name}.min_outward_speed_px_per_sec",
+                minimum=0.000001,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class EvaluationThresholdConfig:
     start_tolerance_seconds: float = 3.0
     min_temporal_overlap: float = 0.1
@@ -273,16 +394,35 @@ class RuntimeConfig:
     """Runtime sampling settings shared by perception runners."""
 
     processing_fps: float = 5.0
+    start_frame: int | None = None
+    warmup_seconds: float = 0.0
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "RuntimeConfig":
-        _reject_unknown(value, {"processing_fps"}, name="runtime")
+        _reject_unknown(value, {"processing_fps", "start_frame", "warmup_seconds"}, name="runtime")
+        raw_start_frame = value.get("start_frame")
+        if raw_start_frame in (None, ""):
+            start_frame = None
+        else:
+            if isinstance(raw_start_frame, bool):
+                raise ConfigValidationError("runtime.start_frame must be a non-negative integer")
+            try:
+                start_frame = int(raw_start_frame)
+            except (TypeError, ValueError) as exc:
+                raise ConfigValidationError("runtime.start_frame must be a non-negative integer") from exc
+            if start_frame < 0:
+                raise ConfigValidationError("runtime.start_frame must be a non-negative integer")
         return cls(
             processing_fps=_finite_number(
                 value.get("processing_fps", 5.0),
                 name="runtime.processing_fps",
                 minimum=0.000001,
-            )
+            ),
+            start_frame=start_frame,
+            warmup_seconds=_finite_number(
+                value.get("warmup_seconds", 0.0),
+                name="runtime.warmup_seconds",
+            ),
         )
 
 
@@ -646,8 +786,8 @@ class PerceptionConfig:
 @dataclass(frozen=True, slots=True)
 class SystemConfig:
     dataset_version: str = "development"
-    forgotten: EventTimingConfig = EventTimingConfig()
-    moved: EventTimingConfig = EventTimingConfig()
+    forgotten: ForgottenEventConfig = ForgottenEventConfig()
+    moved: MovedEventConfig = MovedEventConfig()
     evaluation: EvaluationThresholdConfig = EvaluationThresholdConfig()
     source: SourceConfig = SourceConfig()
     roi: ROIConfig = ROIConfig()
@@ -712,11 +852,11 @@ def validate_config(value: Mapping[str, Any]) -> SystemConfig:
         raise ConfigValidationError("dataset_version must not be empty")
     events = _mapping(value.get("events", {}), name="events")
     _reject_unknown(events, {"forgotten", "moved"}, name="events")
-    forgotten = EventTimingConfig.from_mapping(
+    forgotten = ForgottenEventConfig.from_mapping(
         _mapping(events.get("forgotten", {}), name="events.forgotten"),
         name="events.forgotten",
     )
-    moved = EventTimingConfig.from_mapping(
+    moved = MovedEventConfig.from_mapping(
         _mapping(events.get("moved", {}), name="events.moved"),
         name="events.moved",
     )

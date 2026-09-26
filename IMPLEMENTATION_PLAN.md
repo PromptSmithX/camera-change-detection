@@ -145,20 +145,20 @@ src/.../evaluation/
 
 ## Tasks
 
-- [ ] Forgotten FSM.
-- [ ] candidate timer.
-- [ ] stable condition.
-- [ ] disappearance/close logic.
-- [ ] duplicate prevention.
-- [ ] EventStore integration.
-- [ ] snapshot BEFORE/AFTER.
+- [x] Forgotten FSM.
+- [x] candidate timer.
+- [x] stable condition.
+- [x] disappearance/close logic.
+- [x] duplicate prevention.
+- [x] EventStore integration.
+- [x] snapshot BEFORE/AFTER.
 
 ## Exit criteria
 
-- [ ] New stable object → one forgotten event.
-- [ ] Short-lived object → no event.
-- [ ] Same object qua ID switch → no duplicate.
-- [ ] Validation metric được sinh riêng cho FORGOTTEN_OBJECT.
+- [x] New stable object → one forgotten event.
+- [x] Short-lived object → no event.
+- [x] Same object qua ID switch → no duplicate.
+- [x] Validation metric được sinh riêng cho FORGOTTEN_OBJECT.
 
 ---
 
@@ -168,22 +168,22 @@ src/.../evaluation/
 
 ## Tasks
 
-- [ ] Baseline object absence tracking.
-- [ ] Candidate identity search tại new location.
-- [ ] Identity scoring.
-- [ ] Displacement rule.
-- [ ] Move candidate state.
-- [ ] Confirmation timer.
-- [ ] from/to output.
-- [ ] Reappearance old-location cancellation.
+- [x] Baseline object absence tracking.
+- [x] Candidate identity search tại new location.
+- [x] Identity scoring.
+- [x] Displacement rule.
+- [x] Move candidate state.
+- [x] Confirmation timer.
+- [x] from/to output.
+- [x] Reappearance old-location cancellation.
 
 ## Exit criteria
 
-- [ ] Same object moved → moved event.
-- [ ] Missing + unrelated new object → no moved event.
-- [ ] Temporary disappearance → no moved event.
-- [ ] Moved event output có from/to bbox.
-- [ ] Validation metric riêng cho MOVED_OBJECT.
+- [x] Same object moved → moved event.
+- [x] Missing + unrelated new object → no moved event.
+- [x] Temporary disappearance → no moved event.
+- [x] Moved event output có from/to bbox.
+- [x] Validation metric riêng cho MOVED_OBJECT.
 
 ---
 
@@ -354,3 +354,24 @@ v2, and identity debug artifacts. The real GPU smoke test passed with the
 official DINOv2 checkpoint cached in `runs/torch-hub/`: 900 frames processed,
 627 detections, 462 observations, and 462 persistent identity assignments.
 Artifacts are under `runs/m3/baseline/` and `runs/m3/smoke/`.
+
+## M4/M5 implementation status (2026-09-24) — IMPLEMENTED
+
+M4 and M5 now have a model-independent event runtime:
+
+- `EventEngine` implements seconds-based forgotten and moved FSMs, including
+  stable-object guards, identity/displacement checks, missing grace, visible
+  egress evidence for `left_scene`, and return-to-baseline cancellation.
+- `EventStore` prevents duplicate active events and records the full lifecycle
+  audit (`created`, `confirmed`, `closed`, `cancelled`).
+- `EventArtifactWriter` writes public `events.jsonl`, lifecycle JSONL, and
+  BEFORE/AFTER snapshots without changing the M2 observation schema.
+- `tools/run_change_detection.py` wires M3 baseline/identity into the event
+  runtime; `configs/m45.example.json` is the reproducible reference config.
+- `tools/benchmark_dataset.py` evaluates validation samples independently and
+  reports overall, `FORGOTTEN_OBJECT`, `MOVED_OBJECT`, outcome-specific, error,
+  and latency metrics. Test evaluation requires an explicit opt-in flag.
+
+Deterministic FSM, configuration, runner-output, and benchmark aggregation
+tests are included. Scene anomaly/occlusion detection remains intentionally
+scoped to M6.

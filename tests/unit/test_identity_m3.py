@@ -78,6 +78,19 @@ def test_unrelated_appearance_creates_new_object_and_missing_becomes_stale():
     assert {item.object_id for item in memory.objects} == {"baseline-1", "new-1"}
 
 
+def test_first_baseline_observation_after_runtime_seek_is_not_reid_expired():
+    memory = _memory()
+    observation = _observation(1, (1.0, 0.0), timestamp=12.0)
+    associations = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [observation],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=12.0,
+    )
+
+    assert associations.matches[0].object_id == "baseline-1"
+
+
 class _FakeDino:
     def to(self, _device):
         return self
