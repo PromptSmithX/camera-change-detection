@@ -62,6 +62,15 @@ class ObservationBuilder:
                     detector_class_id=class_id,
                     detector_confidence=confidence,
                     tracker_id=track.tracker_id,
+                    proposal_source=(
+                        detection.proposal_source if detection is not None else "tracker_prediction"
+                    ),
+                    reference_change_score=(
+                        detection.reference_change_score if detection is not None else None
+                    ),
+                    event_candidate=(
+                        detection.event_candidate if detection is not None else False
+                    ),
                 )
             )
         return observations

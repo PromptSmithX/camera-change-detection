@@ -6,7 +6,13 @@ from math import sqrt
 from typing import Iterable
 
 from change_detection.config import AssociationConfig
-from change_detection.domain import BBox, MemoryObject, Observation, embedding_from_value
+from change_detection.domain import (
+    BBox,
+    MemoryObject,
+    Observation,
+    SCENE_CHANGE_CLASS_ID,
+    embedding_from_value,
+)
 
 from .contracts import AssociationCandidate, AssociationMatch, AssociationResult, AssociationScore
 
@@ -34,7 +40,13 @@ class AssociationEngine:
         dy = observation.centroid.y - (memory.last_bbox.y1 + memory.last_bbox.y2) / 2.0
         spatial = max(0.0, 1.0 - sqrt(dx * dx + dy * dy) / diagonal)
         size = min(memory.last_bbox.area, observation.bbox.area) / max(memory.last_bbox.area, observation.bbox.area)
-        class_compatibility = 1.0 if memory.detector_class_id == observation.detector_class_id else 0.0
+        class_compatibility = (
+            1.0
+            if memory.detector_class_id == observation.detector_class_id
+            or memory.detector_class_id == SCENE_CHANGE_CLASS_ID
+            or observation.detector_class_id == SCENE_CHANGE_CLASS_ID
+            else 0.0
+        )
         total = (
             self.config.appearance_weight * appearance
             + self.config.spatial_weight * spatial
@@ -52,9 +64,59 @@ class AssociationEngine:
         # baseline object has one runtime observation, the normal re-ID window
         # protects against stale matches again.
         baseline_seed = memory.is_baseline and not memory.observation_history
-        if not baseline_seed and timestamp_sec - memory.last_seen_sec > self.config.max_reid_seconds:
+        age = timestamp_sec - memory.last_seen_sec
+        baseline_reidentified = False
+        baseline_candidate_reidentified = False
+        if memory.is_baseline and memory.baseline_bbox is not None and age > self.config.max_reid_seconds:
+            baseline_appearance = _cosine_similarity(
+                memory.baseline_embedding,
+                embedding_from_value(observation.embedding),
+            )
+            baseline_candidate_reidentified = (
+                observation.event_candidate and baseline_appearance >= 0.85
+            )
+            baseline_reidentified = (
+                memory.baseline_bbox.iou(observation.bbox) >= 0.5
+                and baseline_appearance >= 0.85
+            )
+            if baseline_reidentified or baseline_candidate_reidentified:
+                baseline_center_x = (memory.baseline_bbox.x1 + memory.baseline_bbox.x2) / 2.0
+                baseline_center_y = (memory.baseline_bbox.y1 + memory.baseline_bbox.y2) / 2.0
+                dx = observation.centroid.x - baseline_center_x
+                dy = observation.centroid.y - baseline_center_y
+                diagonal = max(1.0, sqrt(float(roi_bbox.width**2 + roi_bbox.height**2)))
+                spatial = max(0.0, 1.0 - sqrt(dx * dx + dy * dy) / diagonal)
+                size = min(memory.baseline_bbox.area, observation.bbox.area) / max(
+                    memory.baseline_bbox.area,
+                    observation.bbox.area,
+                )
+                total = (
+                    self.config.appearance_weight * baseline_appearance
+                    + self.config.spatial_weight * spatial
+                    + self.config.size_weight * size
+                    + self.config.class_weight * score.class_compatibility
+                )
+                if baseline_candidate_reidentified:
+                    total = max(total, baseline_appearance)
+                score = AssociationScore(
+                    appearance=baseline_appearance,
+                    spatial=spatial,
+                    size=size,
+                    class_compatibility=score.class_compatibility,
+                    total=total,
+                )
+        if (
+            not baseline_seed
+            and age > self.config.max_reid_seconds
+            and not baseline_reidentified
+            and not baseline_candidate_reidentified
+        ):
             return AssociationCandidate(memory.object_id, index, score, True, "reid_window_expired")
-        if self.config.require_same_class and score.class_compatibility == 0.0:
+        if (
+            self.config.require_same_class
+            and score.class_compatibility == 0.0
+            and not (observation.event_candidate and score.appearance >= 0.85)
+        ):
             return AssociationCandidate(memory.object_id, index, score, True, "class_mismatch")
         if embedding_from_value(observation.embedding) is None or memory.last_embedding is None:
             return AssociationCandidate(memory.object_id, index, score, True, "missing_embedding")

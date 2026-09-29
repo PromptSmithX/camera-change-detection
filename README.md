@@ -169,5 +169,20 @@ python tools/benchmark_dataset.py \
   --output runs/m45/metrics.json
 ```
 
+Run the complete validation split sequentially, generating a baseline from each
+sample's annotated reference-frame range and preserving per-sample artifacts,
+configs, and logs. The batch writes both the existing-compatible metrics and a
+second report that only counts events confirmed no more than three seconds after
+the ground-truth confirmation:
+
+```text
+python tools/run_validation.py --config configs/m45.example.json
+```
+
+The command creates a new timestamped directory under `runs/validation/`.
+Pass `--output runs/validation/my-run` to choose a stable path; after an
+interruption, use the same path with `--resume`. Resume is rejected if the
+manifest, media, base config, evaluation settings, or pipeline code changed.
+
 The test split is deliberately opt-in: use the locked manifest and pass
 `--allow-test` explicitly.

@@ -58,42 +58,72 @@ def _history_time(item: object) -> float | None:
         return None
 
 
-def _has_egress_evidence(memory: MemoryObject, roi_bbox: BBox, config: MovedEventConfig) -> bool:
-    """Require a visible outward trajectory near an ROI edge before left_scene."""
+def _has_egress_evidence(
+    memory: MemoryObject,
+    roi_bbox: BBox,
+    config: MovedEventConfig,
+    *,
+    timestamp_sec: float,
+) -> bool:
+    """Require sustained, directional travel to an ROI edge before left_scene."""
 
     history = memory.observation_history
-    if len(history) < 2:
+    parsed: list[tuple[BBox, float]] = []
+    for item in history:
+        bbox = _history_bbox(item)
+        timestamp = _history_time(item)
+        if bbox is not None and timestamp is not None:
+            parsed.append((bbox, timestamp))
+    if len(parsed) < 4:
         return False
+
+    if timestamp_sec - parsed[-1][1] > 2.0:
+        return False
+    parsed = [item for item in parsed if 0.0 <= timestamp_sec - item[1] <= 2.0]
+    if len(parsed) < 4 or parsed[-1][1] - parsed[0][1] <= 0:
+        return False
+
     edge_x = max(1.0, roi_bbox.width * config.egress_edge_ratio)
     edge_y = max(1.0, roi_bbox.height * config.egress_edge_ratio)
-    for previous, current in zip(history[:-1], history[1:], strict=False):
-        previous_bbox = _history_bbox(previous)
-        current_bbox = _history_bbox(current)
-        previous_time = _history_time(previous)
-        current_time = _history_time(current)
-        if (
-            previous_bbox is None
-            or current_bbox is None
-            or previous_time is None
-            or current_time is None
-        ):
-            continue
-        delta = current_time - previous_time
-        if delta <= 0:
-            continue
-        previous_center = _center(previous_bbox)
-        current_center = _center(current_bbox)
-        velocity_x = (current_center[0] - previous_center[0]) / delta
-        velocity_y = (current_center[1] - previous_center[1]) / delta
-        if current_bbox.x1 - roi_bbox.x1 <= edge_x and velocity_x <= -config.min_outward_speed_px_per_sec:
-            return True
-        if roi_bbox.x2 - current_bbox.x2 <= edge_x and velocity_x >= config.min_outward_speed_px_per_sec:
-            return True
-        if current_bbox.y1 - roi_bbox.y1 <= edge_y and velocity_y <= -config.min_outward_speed_px_per_sec:
-            return True
-        if roi_bbox.y2 - current_bbox.y2 <= edge_y and velocity_y >= config.min_outward_speed_px_per_sec:
-            return True
-    return False
+    end_bbox = parsed[-1][0]
+    edge_gaps = {
+        "left": end_bbox.x1 - roi_bbox.x1,
+        "right": roi_bbox.x2 - end_bbox.x2,
+        "top": end_bbox.y1 - roi_bbox.y1,
+        "bottom": roi_bbox.y2 - end_bbox.y2,
+    }
+    eligible_edges = {
+        "left": edge_x,
+        "right": edge_x,
+        "top": edge_y,
+        "bottom": edge_y,
+    }
+    edge = min(edge_gaps, key=lambda name: edge_gaps[name] / eligible_edges[name])
+    if edge_gaps[edge] > eligible_edges[edge]:
+        return False
+
+    centers = [_center(item[0]) for item in parsed]
+    if edge == "left":
+        progress = [left[0] - right[0] for left, right in zip(centers[:-1], centers[1:], strict=False)]
+        net_outward = centers[0][0] - centers[-1][0]
+    elif edge == "right":
+        progress = [right[0] - left[0] for left, right in zip(centers[:-1], centers[1:], strict=False)]
+        net_outward = centers[-1][0] - centers[0][0]
+    elif edge == "top":
+        progress = [left[1] - right[1] for left, right in zip(centers[:-1], centers[1:], strict=False)]
+        net_outward = centers[0][1] - centers[-1][1]
+    else:
+        progress = [right[1] - left[1] for left, right in zip(centers[:-1], centers[1:], strict=False)]
+        net_outward = centers[-1][1] - centers[0][1]
+
+    elapsed = parsed[-1][1] - parsed[0][1]
+    directional_steps = sum(delta >= 0.5 for delta in progress)
+    required_displacement = max(4.0, 0.03 * hypot(float(roi_bbox.width), float(roi_bbox.height)))
+    return (
+        net_outward >= required_displacement
+        and directional_steps / max(1, len(progress)) >= 0.70
+        and net_outward / elapsed >= config.min_outward_speed_px_per_sec
+    )
 
 
 @dataclass(slots=True)
@@ -173,6 +203,14 @@ class EventEngine:
     ) -> list[EventAction]:
         actions: list[EventAction] = []
         state = self._forgotten_states.get(memory.object_id)
+        if observation is not None and not observation.event_candidate:
+            # A raw YOLO box (or a tracker prediction) is useful for keeping
+            # identity alive, but it is not evidence for a change event and
+            # must not be mistaken for disappearance either.
+            if state is not None:
+                state.last_observed_sec = timestamp_sec
+                state.event.after_bbox = observation.bbox
+            return actions
         if observation is not None:
             if observation.detector_confidence < self.forgotten.min_confidence:
                 # It is still an observation for disappearance purposes, but
@@ -272,6 +310,31 @@ class EventEngine:
             if state is not None:
                 state.last_evidence_sec = timestamp_sec
             return actions
+        if observation is not None and not observation.event_candidate:
+            # Keep ordinary detections in memory for trajectory/re-ID, while
+            # requiring a reference-change proposal to create or advance a
+            # relocation event. A clear return to the baseline can still
+            # close/cancel an existing event.
+            displaced = (
+                _displacement_ratio(baseline_bbox, observation.bbox, roi_bbox)
+                >= self.moved.min_displacement_ratio
+            )
+            if not displaced:
+                if state is not None and not state.confirmed:
+                    actions.append(
+                        self._action(EventActionType.CANCELLED, state.event, "returned_or_invalid_move")
+                    )
+                    self._moved_states.pop(memory.object_id, None)
+                elif state is not None and state.confirmed:
+                    state.event.ended_at_sec = timestamp_sec
+                    state.event.lifecycle = EventLifecycle.CLOSED
+                    actions.append(
+                        self._action(EventActionType.CLOSED, state.event, "returned_to_baseline")
+                    )
+                    self._moved_states.pop(memory.object_id, None)
+                return actions
+            observation = None
+            assignment_score = None
 
         if observation is not None and assignment_score is not None:
             displaced = _displacement_ratio(baseline_bbox, observation.bbox, roi_bbox) >= self.moved.min_displacement_ratio
@@ -330,7 +393,12 @@ class EventEngine:
         if state is not None and not state.confirmed:
             if memory.state == ObjectState.PRESENT:
                 return actions
-            if not _has_egress_evidence(memory, roi_bbox, self.moved):
+            if not _has_egress_evidence(
+                memory,
+                roi_bbox,
+                self.moved,
+                timestamp_sec=timestamp_sec,
+            ):
                 if memory.missing_since_sec is not None and timestamp_sec - memory.missing_since_sec > self.moved.missing_grace_seconds:
                     actions.append(self._action(EventActionType.CANCELLED, state.event, "missing_without_egress"))
                     self._moved_states.pop(memory.object_id, None)
@@ -340,7 +408,10 @@ class EventEngine:
             return actions
 
         if memory.state in {ObjectState.TEMP_MISSING, ObjectState.STALE} and _has_egress_evidence(
-            memory, roi_bbox, self.moved
+            memory,
+            roi_bbox,
+            self.moved,
+            timestamp_sec=timestamp_sec,
         ):
             missing_since = memory.missing_since_sec
             if missing_since is None or timestamp_sec - missing_since < self.moved.missing_grace_seconds:

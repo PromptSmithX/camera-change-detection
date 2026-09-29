@@ -163,6 +163,9 @@ class PerceptionRunner:
         next_process_time: float | None = None
         first_processed_timestamp: float | None = None
         self.tracker.reset()
+        detector_reset = getattr(self.detector, "reset", None)
+        if callable(detector_reset):
+            detector_reset()
         if self.embedding_refresher is not None:
             self.embedding_refresher.reset()
         if self.object_memory is not None:
@@ -216,7 +219,22 @@ class PerceptionRunner:
                                 reason=scene_status.reason or "runtime_warmup",
                             )
 
-                    detections = self.detector.detect(frame.image, self.roi)
+                    detect_at = getattr(self.detector, "detect_at", None)
+                    if callable(detect_at):
+                        detections = detect_at(
+                            frame.image,
+                            self.roi,
+                            timestamp_sec=frame.timestamp_sec,
+                        )
+                    else:
+                        detections = self.detector.detect(frame.image, self.roi)
+                    anomaly_reason = getattr(self.detector, "scene_anomaly_reason", None)
+                    if scene_status is not None and anomaly_reason:
+                        scene_status = replace(
+                            scene_status,
+                            stable=False,
+                            reason=scene_status.reason or str(anomaly_reason),
+                        )
                     tracks = self.tracker.update(detections, frame.image)
                     observations = self.observation_builder.build(
                         frame, detections, tracks, self.roi
