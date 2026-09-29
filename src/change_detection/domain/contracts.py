@@ -12,6 +12,9 @@ from math import isfinite
 from typing import Any, Iterable, Mapping, Sequence
 
 
+SCENE_CHANGE_CLASS_ID = 1000
+
+
 class EventType(StrEnum):
     FORGOTTEN_OBJECT = "FORGOTTEN_OBJECT"
     MOVED_OBJECT = "MOVED_OBJECT"
@@ -156,6 +159,9 @@ class Detection:
     class_id: int
     class_name: str
     mask: Any = field(default=None, repr=False, compare=False)
+    proposal_source: str = "yolo"
+    reference_change_score: float | None = None
+    event_candidate: bool = True
 
     def __post_init__(self) -> None:
         if not isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
@@ -166,6 +172,15 @@ class Detection:
             raise ValueError("Detection class_name must not be empty")
         if self.bbox.area <= 0:
             raise ValueError("Detection bbox must have positive area")
+        if not str(self.proposal_source).strip():
+            raise ValueError("Detection proposal_source must not be empty")
+        if self.reference_change_score is not None and (
+            not isfinite(float(self.reference_change_score))
+            or not 0.0 <= float(self.reference_change_score) <= 1.0
+        ):
+            raise ValueError("Detection reference_change_score must be between 0 and 1")
+        if not isinstance(self.event_candidate, bool):
+            raise ValueError("Detection event_candidate must be a boolean")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -173,6 +188,9 @@ class Detection:
             "confidence": float(self.confidence),
             "class_id": int(self.class_id),
             "class_name": self.class_name,
+            "proposal_source": self.proposal_source,
+            "reference_change_score": self.reference_change_score,
+            "event_candidate": self.event_candidate,
         }
 
 
@@ -242,6 +260,9 @@ class Observation:
     tracker_id: int | None
     embedding: Any = field(default=None, repr=False, compare=False)
     occluded: bool = False
+    proposal_source: str = "yolo"
+    reference_change_score: float | None = None
+    event_candidate: bool = True
 
     def __post_init__(self) -> None:
         if self.frame_index < 0:
@@ -258,6 +279,15 @@ class Observation:
             isinstance(self.tracker_id, bool) or int(self.tracker_id) < 0
         ):
             raise ValueError("Observation tracker_id must be a non-negative integer")
+        if not str(self.proposal_source).strip():
+            raise ValueError("Observation proposal_source must not be empty")
+        if self.reference_change_score is not None and (
+            not isfinite(float(self.reference_change_score))
+            or not 0.0 <= float(self.reference_change_score) <= 1.0
+        ):
+            raise ValueError("Observation reference_change_score must be between 0 and 1")
+        if not isinstance(self.event_candidate, bool):
+            raise ValueError("Observation event_candidate must be a boolean")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -270,6 +300,9 @@ class Observation:
             "detector_confidence": float(self.detector_confidence),
             "tracker_id": self.tracker_id,
             "occluded": bool(self.occluded),
+            "proposal_source": self.proposal_source,
+            "reference_change_score": self.reference_change_score,
+            "event_candidate": self.event_candidate,
         }
 
 

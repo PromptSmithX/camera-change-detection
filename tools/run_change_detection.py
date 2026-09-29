@@ -19,7 +19,12 @@ from change_detection.association import AssociationEngine
 from change_detection.config import ConfigValidationError, load_config
 from change_detection.dataset.io import sha256_file
 from change_detection.events import EventEngine, EventOutputError, EventStore
-from change_detection.infrastructure.models import DinoV2Encoder, YoloDetector
+from change_detection.infrastructure.models import (
+    DinoV2Encoder,
+    HybridDetector,
+    ReferenceChangeDetector,
+    YoloDetector,
+)
 from change_detection.infrastructure.tracking import ByteTrackAdapter
 from change_detection.memory import ObjectMemory
 from change_detection.perception import EmbeddingRefresher, PerceptionDependencyError
@@ -65,7 +70,11 @@ def _resolve_model(root: Path, model: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=Path("runs/m45/change_detection"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Output directory (defaults to runs/m45/change_detection/<source_id>)",
+    )
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     return parser
 
@@ -110,7 +119,7 @@ def main() -> int:
 
         detector_config = config.perception.detector
         tracker_config = config.perception.tracker
-        detector = YoloDetector(
+        yolo_detector = YoloDetector(
             _resolve_model(root, detector_config.model),
             confidence=detector_config.confidence,
             iou=detector_config.iou,
@@ -135,6 +144,14 @@ def main() -> int:
             cache_dir=_torch_cache(root),
         )
         reference_image = baseline.load_reference_image(baseline_path)
+        detector = HybridDetector(
+            yolo_detector,
+            ReferenceChangeDetector(
+                reference_image,
+                roi,
+                baseline_boxes=(item.bbox for item in baseline.identity_objects()),
+            ),
+        )
         event_store = EventStore()
         event_engine = EventEngine(forgotten=config.forgotten, moved=config.moved)
 
@@ -157,7 +174,12 @@ def main() -> int:
                 scene_status_provider=StableSceneStatusProvider(),
                 reference_image=reference_image,
             ).run(
-                _resolve_output(root, args.output),
+                _resolve_output(
+                    root,
+                    args.output
+                    if args.output is not None
+                    else Path("runs/m45/change_detection") / source.metadata.source_id,
+                ),
                 run_metadata={
                     "config_path": str(config_path.resolve()),
                     "config": config.to_dict(),

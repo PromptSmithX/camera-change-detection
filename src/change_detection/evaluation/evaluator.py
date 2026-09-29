@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, Iterable, Mapping
 
 from change_detection.domain import BBox, EventAnnotation, EventType, MovementOutcome
@@ -15,6 +16,12 @@ class EvaluationConfig:
     forgotten_iou_threshold: float = 0.3
     moved_iou_threshold: float = 0.3
     require_prediction_object_id: bool = False
+    max_confirmation_delay_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        delay = self.max_confirmation_delay_seconds
+        if delay is not None and (not isfinite(float(delay)) or float(delay) < 0):
+            raise ValueError("max_confirmation_delay_seconds must be finite and non-negative")
 
 
 @dataclass(slots=True)
@@ -77,6 +84,20 @@ def _identity_match(prediction: EventAnnotation, ground_truth: EventAnnotation, 
     return bool(prediction.object_id and ground_truth.object_id and prediction.object_id == ground_truth.object_id)
 
 
+def _confirmation_match(
+    prediction: EventAnnotation,
+    ground_truth: EventAnnotation,
+    config: EvaluationConfig,
+) -> bool:
+    max_delay = config.max_confirmation_delay_seconds
+    if max_delay is None:
+        return True
+    if prediction.confirmation_time_sec is None or ground_truth.confirmation_time_sec is None:
+        return False
+    delay = prediction.confirmation_time_sec - ground_truth.confirmation_time_sec
+    return delay <= max_delay + 1e-9
+
+
 def _match_score(prediction: EventAnnotation, ground_truth: EventAnnotation, config: EvaluationConfig) -> float | None:
     if prediction.event_type != ground_truth.event_type:
         return None
@@ -88,6 +109,8 @@ def _match_score(prediction: EventAnnotation, ground_truth: EventAnnotation, con
     if not _temporal_match(prediction, ground_truth, config):
         return None
     if not _identity_match(prediction, ground_truth, config):
+        return None
+    if not _confirmation_match(prediction, ground_truth, config):
         return None
     spatial = _spatial_score(prediction, ground_truth, config)
     threshold = config.moved_iou_threshold if ground_truth.event_type == EventType.MOVED_OBJECT else config.forgotten_iou_threshold
@@ -139,6 +162,11 @@ def _error_category(
     spatial = _spatial_score(prediction, ground_truth, config)
     if spatial is None or spatial < (config.moved_iou_threshold if ground_truth.event_type == EventType.MOVED_OBJECT else config.forgotten_iou_threshold):
         return "spatial_mismatch"
+    if config.max_confirmation_delay_seconds is not None:
+        if prediction.confirmation_time_sec is None or ground_truth.confirmation_time_sec is None:
+            return "missing_confirmation_time"
+        if not _confirmation_match(prediction, ground_truth, config):
+            return "late_confirmation"
     return "identity_mismatch"
 
 

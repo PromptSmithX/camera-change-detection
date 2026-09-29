@@ -177,6 +177,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--forgotten-iou", type=float, default=0.3)
     parser.add_argument("--moved-iou", type=float, default=0.3)
     parser.add_argument("--require-object-id", action="store_true")
+    parser.add_argument(
+        "--ignore-predictions-for",
+        action="append",
+        default=[],
+        metavar="VIDEO_ID",
+        help="Treat this sample's prediction as missing even if an artifact exists.",
+    )
+    parser.add_argument(
+        "--max-confirmation-delay-seconds",
+        type=float,
+        help=(
+            "Optional on-time gate: a prediction only matches when its confirmation "
+            "is no later than this many seconds after the ground-truth confirmation. "
+            "Both confirmation timestamps are required."
+        ),
+    )
     return parser
 
 
@@ -208,18 +224,24 @@ def main() -> int:
         forgotten_iou_threshold=args.forgotten_iou,
         moved_iou_threshold=args.moved_iou,
         require_prediction_object_id=args.require_object_id,
+        max_confirmation_delay_seconds=args.max_confirmation_delay_seconds,
     )
 
     sample_results: list[tuple[str, Mapping[str, Any]]] = []
     missing_predictions: list[str] = []
+    ignored_prediction_ids = set(args.ignore_predictions_for)
     single_sample = len(samples) == 1
     for sample_data in samples:
         sample_id = str(sample_data["video_id"])
         sample = _sample_ground_truth(root, sample_data)
-        prediction_path = _prediction_path(
-            predictions_dir,
-            sample_id,
-            allow_root_file=single_sample,
+        prediction_path = (
+            None
+            if sample_id in ignored_prediction_ids
+            else _prediction_path(
+                predictions_dir,
+                sample_id,
+                allow_root_file=single_sample,
+            )
         )
         if prediction_path is None:
             missing_predictions.append(sample_id)
@@ -239,6 +261,15 @@ def main() -> int:
         missing_predictions=missing_predictions,
         test_locked=bool(manifest.get("test_locked", False)),
     )
+    result["evaluation"] = {
+        "start_tolerance_seconds": evaluation_config.start_tolerance_seconds,
+        "min_temporal_overlap": evaluation_config.min_temporal_overlap,
+        "forgotten_iou_threshold": evaluation_config.forgotten_iou_threshold,
+        "moved_iou_threshold": evaluation_config.moved_iou_threshold,
+        "require_prediction_object_id": evaluation_config.require_prediction_object_id,
+        "max_confirmation_delay_seconds": evaluation_config.max_confirmation_delay_seconds,
+    }
+    result["dataset"]["ignored_prediction_ids"] = sorted(ignored_prediction_ids)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.output:
         output = args.output if args.output.is_absolute() else root / args.output
