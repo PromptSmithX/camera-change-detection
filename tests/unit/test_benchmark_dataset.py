@@ -18,7 +18,14 @@ def test_dataset_benchmark_aggregates_per_sample_without_cross_video_matching(tm
                         "relocated": {"tp": 0, "fp": 0, "fn": 0},
                         "left_scene": {"tp": 0, "fp": 0, "fn": 0},
                     },
-                    "matches": [],
+                    "matches": [
+                        {
+                            "prediction_event_id": "pred-1",
+                            "ground_truth_event_id": "gt-1",
+                            "confirmation_latency_sec": 0.5,
+                            "start_delay_sec": 2.0,
+                        }
+                    ],
                     "error_breakdown": {"duplicate_event": 1},
                     "latency": {"matched_events": 1, "mean_confirmation_delta_sec": 0.5},
                 },
@@ -57,6 +64,8 @@ def test_dataset_benchmark_aggregates_per_sample_without_cross_video_matching(tm
     assert result["MOVED_OBJECT"]["fn"] == 1
     assert result["MOVED_OBJECT_OUTCOMES"]["relocated"]["fn"] == 1
     assert result["latency"]["mean_confirmation_delta_sec"] == 0.5
+    assert result["timeliness"]["confirmation_latency_sec"]["median"] == 0.5
+    assert result["timeliness"]["deadlines"]["3s"]["on_time_count"] == 1
     assert result["error_breakdown"] == {
         "duplicate_event": 1,
         "missed_moved_object": 1,

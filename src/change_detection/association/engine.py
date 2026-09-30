@@ -65,6 +65,10 @@ class AssociationEngine:
         # protects against stale matches again.
         baseline_seed = memory.is_baseline and not memory.observation_history
         age = timestamp_sec - memory.last_seen_sec
+        contour_candidate = (
+            observation.event_candidate
+            and observation.proposal_source in {"reference_change", "fused"}
+        )
         baseline_reidentified = False
         baseline_candidate_reidentified = False
         if memory.is_baseline and memory.baseline_bbox is not None and age > self.config.max_reid_seconds:
@@ -73,7 +77,7 @@ class AssociationEngine:
                 embedding_from_value(observation.embedding),
             )
             baseline_candidate_reidentified = (
-                observation.event_candidate and baseline_appearance >= 0.85
+                contour_candidate and baseline_appearance >= 0.85
             )
             baseline_reidentified = (
                 memory.baseline_bbox.iou(observation.bbox) >= 0.5
@@ -115,7 +119,7 @@ class AssociationEngine:
         if (
             self.config.require_same_class
             and score.class_compatibility == 0.0
-            and not (observation.event_candidate and score.appearance >= 0.85)
+            and not (contour_candidate and score.appearance >= 0.85)
         ):
             return AssociationCandidate(memory.object_id, index, score, True, "class_mismatch")
         if embedding_from_value(observation.embedding) is None or memory.last_embedding is None:

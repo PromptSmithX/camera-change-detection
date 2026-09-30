@@ -56,10 +56,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ground-truth", type=Path, required=True)
     parser.add_argument("--predictions", type=Path, required=True)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--start-tolerance", type=float, default=3.0)
-    parser.add_argument("--min-overlap", type=float, default=0.1)
+    parser.add_argument("--event-boundary-tolerance", type=float, default=1.0)
     parser.add_argument("--forgotten-iou", type=float, default=0.3)
     parser.add_argument("--moved-iou", type=float, default=0.3)
+    parser.add_argument(
+        "--latency-deadlines-seconds",
+        type=float,
+        nargs="+",
+        default=(3.0, 5.0, 10.0),
+    )
+    parser.add_argument("--start-tolerance", type=float, default=3.0, help=argparse.SUPPRESS)
+    parser.add_argument("--min-overlap", type=float, default=0.1, help=argparse.SUPPRESS)
     return parser
 
 
@@ -71,10 +78,12 @@ def main() -> int:
         ground_truth,
         predictions,
         config=EvaluationConfig(
+            event_boundary_tolerance_seconds=args.event_boundary_tolerance,
             start_tolerance_seconds=args.start_tolerance,
             min_temporal_overlap=args.min_overlap,
             forgotten_iou_threshold=args.forgotten_iou,
             moved_iou_threshold=args.moved_iou,
+            latency_deadlines_seconds=tuple(args.latency_deadlines_seconds),
         ),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))

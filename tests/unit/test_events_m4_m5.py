@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from change_detection.association import AssociationEngine
 from change_detection.config import (
     AssociationConfig,
@@ -167,6 +169,25 @@ def test_forgotten_low_confidence_interval_does_not_advance_timer():
     _step(memory, engine, store, [_observation(1, bbox, 1.0)], 1.0)
 
     assert store.confirmed_events == ()
+
+
+def test_masked_overlap_evidence_on_baseline_does_not_confirm_relocation():
+    memory = _baseline_memory()
+    engine = _engine()
+    store = EventStore()
+    old_bbox = BBox(10, 10, 20, 20)
+    displaced_bbox = BBox(20, 10, 30, 20)
+
+    _step(memory, engine, store, [_observation(1, old_bbox, 0.0)], 0.0)
+    for timestamp in (0.5, 1.0, 1.5):
+        observation = replace(
+            _observation(1, displaced_bbox, timestamp),
+            proposal_source="yolo_reference_change",
+            event_candidate=True,
+        )
+        _step(memory, engine, store, [observation], timestamp)
+
+    assert not any(event.event_type == EventType.MOVED_OBJECT for event in store.confirmed_events)
 
 
 def test_forgotten_timer_freezes_during_scene_anomaly():

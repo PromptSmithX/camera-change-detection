@@ -181,37 +181,54 @@ class MovedEventConfig:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationThresholdConfig:
-    start_tolerance_seconds: float = 3.0
-    min_temporal_overlap: float = 0.1
+    event_boundary_tolerance_seconds: float = 1.0
     forgotten_iou_threshold: float = 0.3
     moved_iou_threshold: float = 0.3
     require_prediction_object_id: bool = False
+    latency_deadlines_seconds: tuple[float, ...] = (3.0, 5.0, 10.0)
+    # Deprecated compatibility fields. The correctness evaluator no longer
+    # uses annotation/prediction start-time proximity for event matching.
+    start_tolerance_seconds: float = 3.0
+    min_temporal_overlap: float = 0.1
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EvaluationThresholdConfig":
         _reject_unknown(
             value,
             {
+                "event_boundary_tolerance_seconds",
                 "start_tolerance_seconds",
                 "min_temporal_overlap",
                 "forgotten_iou_threshold",
                 "moved_iou_threshold",
                 "require_prediction_object_id",
+                "latency_deadlines_seconds",
             },
             name="evaluation",
         )
         require_id = value.get("require_prediction_object_id", False)
         if not isinstance(require_id, bool):
             raise ConfigValidationError("evaluation.require_prediction_object_id must be boolean")
+        raw_deadlines = value.get("latency_deadlines_seconds", (3.0, 5.0, 10.0))
+        if not isinstance(raw_deadlines, (list, tuple)) or not raw_deadlines:
+            raise ConfigValidationError(
+                "evaluation.latency_deadlines_seconds must be a non-empty array"
+            )
+        deadlines = tuple(
+            sorted(
+                {
+                    _finite_number(
+                        item,
+                        name="evaluation.latency_deadlines_seconds[]",
+                    )
+                    for item in raw_deadlines
+                }
+            )
+        )
         return cls(
-            start_tolerance_seconds=_finite_number(
-                value.get("start_tolerance_seconds", 3.0),
-                name="evaluation.start_tolerance_seconds",
-            ),
-            min_temporal_overlap=_finite_number(
-                value.get("min_temporal_overlap", 0.1),
-                name="evaluation.min_temporal_overlap",
-                maximum=1.0,
+            event_boundary_tolerance_seconds=_finite_number(
+                value.get("event_boundary_tolerance_seconds", 1.0),
+                name="evaluation.event_boundary_tolerance_seconds",
             ),
             forgotten_iou_threshold=_finite_number(
                 value.get("forgotten_iou_threshold", 0.3),
@@ -224,6 +241,16 @@ class EvaluationThresholdConfig:
                 maximum=1.0,
             ),
             require_prediction_object_id=require_id,
+            latency_deadlines_seconds=deadlines,
+            start_tolerance_seconds=_finite_number(
+                value.get("start_tolerance_seconds", 3.0),
+                name="evaluation.start_tolerance_seconds",
+            ),
+            min_temporal_overlap=_finite_number(
+                value.get("min_temporal_overlap", 0.1),
+                name="evaluation.min_temporal_overlap",
+                maximum=1.0,
+            ),
         )
 
 
@@ -751,6 +778,60 @@ class BaselineConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MaskedOverlapConfig:
+    """Recover new detections that cover a masked baseline object."""
+
+    enabled: bool = True
+    min_overlap_ratio: float = 0.25
+    min_changed_fraction: float = 0.5
+    max_person_overlap_ratio: float = 0.1
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "MaskedOverlapConfig":
+        name = "perception.reference_change.masked_overlap"
+        _reject_unknown(
+            value,
+            {"enabled", "min_overlap_ratio", "min_changed_fraction", "max_person_overlap_ratio"},
+            name=name,
+        )
+        enabled = value.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError(f"{name}.enabled must be boolean")
+        return cls(
+            enabled=enabled,
+            min_overlap_ratio=_finite_number(
+                value.get("min_overlap_ratio", 0.25),
+                name=f"{name}.min_overlap_ratio",
+                maximum=1.0,
+            ),
+            min_changed_fraction=_finite_number(
+                value.get("min_changed_fraction", 0.5),
+                name=f"{name}.min_changed_fraction",
+                maximum=1.0,
+            ),
+            max_person_overlap_ratio=_finite_number(
+                value.get("max_person_overlap_ratio", 0.1),
+                name=f"{name}.max_person_overlap_ratio",
+                maximum=1.0,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceChangeConfig:
+    masked_overlap: MaskedOverlapConfig = MaskedOverlapConfig()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ReferenceChangeConfig":
+        _reject_unknown(value, {"masked_overlap"}, name="perception.reference_change")
+        return cls(
+            masked_overlap=MaskedOverlapConfig.from_mapping(
+                _mapping(value.get("masked_overlap", {}), name="perception.reference_change.masked_overlap")
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PerceptionConfig:
     """M2 perception configuration.
 
@@ -762,10 +843,11 @@ class PerceptionConfig:
     detector: DetectorConfig = DetectorConfig()
     tracker: TrackerConfig = TrackerConfig()
     encoder: EncoderConfig = EncoderConfig()
+    reference_change: ReferenceChangeConfig = ReferenceChangeConfig()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "PerceptionConfig":
-        _reject_unknown(value, {"enabled", "detector", "tracker", "encoder"}, name="perception")
+        _reject_unknown(value, {"enabled", "detector", "tracker", "encoder", "reference_change"}, name="perception")
         enabled = value.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ConfigValidationError("perception.enabled must be boolean")
@@ -779,6 +861,9 @@ class PerceptionConfig:
             ),
             encoder=EncoderConfig.from_mapping(
                 _mapping(value.get("encoder", {}), name="perception.encoder")
+            ),
+            reference_change=ReferenceChangeConfig.from_mapping(
+                _mapping(value.get("reference_change", {}), name="perception.reference_change")
             ),
         )
 

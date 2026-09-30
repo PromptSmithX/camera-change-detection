@@ -310,11 +310,14 @@ class EventEngine:
             if state is not None:
                 state.last_evidence_sec = timestamp_sec
             return actions
-        if observation is not None and not observation.event_candidate:
-            # Keep ordinary detections in memory for trajectory/re-ID, while
-            # requiring a reference-change proposal to create or advance a
-            # relocation event. A clear return to the baseline can still
-            # close/cancel an existing event.
+        if observation is not None and (
+            not observation.event_candidate
+            or observation.proposal_source == "yolo_reference_change"
+        ):
+            # Masked-overlap evidence can support a new forgotten object, but
+            # it does not establish that an existing baseline object moved.
+            # Keep these observations in memory for trajectory/re-ID while
+            # requiring a contour-based proposal for relocation evidence.
             displaced = (
                 _displacement_ratio(baseline_bbox, observation.bbox, roi_bbox)
                 >= self.moved.min_displacement_ratio

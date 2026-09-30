@@ -171,9 +171,10 @@ python tools/benchmark_dataset.py \
 
 Run the complete validation split sequentially, generating a baseline from each
 sample's annotated reference-frame range and preserving per-sample artifacts,
-configs, and logs. The batch writes both the existing-compatible metrics and a
-second report that only counts events confirmed no more than three seconds after
-the ground-truth confirmation:
+configs, and logs. The batch writes `metrics/evaluation.json`: TP/FP/FN measure
+event correctness using the confirmed event window and spatial overlap, while
+confirmation latency is reported separately at the 3, 5, and 10 second
+deadlines:
 
 ```text
 python tools/run_validation.py --config configs/m45.example.json

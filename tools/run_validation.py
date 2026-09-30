@@ -1,4 +1,4 @@
-"""Run the M4/M5 pipeline and both benchmark reports for every validation sample.
+"""Run the M4/M5 pipeline and correctness evaluation for every validation sample.
 
 Example:
     python tools/run_validation.py --config configs/m45.example.json
@@ -390,7 +390,6 @@ def _evaluation_command(
     manifest_path: Path,
     output_path: Path,
     args: argparse.Namespace,
-    on_time: bool,
     ignored_sample_ids: list[str],
 ) -> list[str]:
     command = [
@@ -406,23 +405,19 @@ def _evaluation_command(
         "validation",
         "--output",
         _relative(root, output_path),
-        "--start-tolerance",
-        str(args.start_tolerance),
-        "--min-overlap",
-        str(args.min_overlap),
+        "--event-boundary-tolerance",
+        str(args.event_boundary_tolerance),
         "--forgotten-iou",
         str(args.forgotten_iou),
         "--moved-iou",
         str(args.moved_iou),
+        "--latency-deadlines-seconds",
+        *(str(value) for value in args.latency_deadlines_seconds),
     ]
     if args.require_object_id:
         command.append("--require-object-id")
     for sample_id in ignored_sample_ids:
         command.extend(["--ignore-predictions-for", sample_id])
-    if on_time:
-        command.extend(
-            ["--max-confirmation-delay-seconds", str(args.on_time_lateness_seconds)]
-        )
     return command
 
 
@@ -445,12 +440,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Resume this batch only if its manifest, inputs, config, and code still match.",
     )
-    parser.add_argument("--start-tolerance", type=float, default=3.0)
-    parser.add_argument("--min-overlap", type=float, default=0.1)
+    parser.add_argument("--event-boundary-tolerance", type=float, default=1.0)
     parser.add_argument("--forgotten-iou", type=float, default=0.3)
     parser.add_argument("--moved-iou", type=float, default=0.3)
     parser.add_argument("--require-object-id", action="store_true")
-    parser.add_argument("--on-time-lateness-seconds", type=float, default=3.0)
+    parser.add_argument(
+        "--latency-deadlines-seconds",
+        type=float,
+        nargs="+",
+        default=(3.0, 5.0, 10.0),
+    )
+    parser.add_argument("--start-tolerance", type=float, default=3.0, help=argparse.SUPPRESS)
+    parser.add_argument("--min-overlap", type=float, default=0.1, help=argparse.SUPPRESS)
     return parser
 
 
@@ -496,15 +497,22 @@ def main() -> int:
                 pipeline_sha256=pipeline_sha256,
             )
 
-        if not math.isfinite(args.on_time_lateness_seconds) or args.on_time_lateness_seconds < 0:
-            raise ValueError("on-time lateness threshold must be finite and non-negative")
+        if (
+            not math.isfinite(args.event_boundary_tolerance)
+            or args.event_boundary_tolerance < 0
+        ):
+            raise ValueError("event boundary tolerance must be finite and non-negative")
+        deadlines = tuple(sorted(set(args.latency_deadlines_seconds)))
+        if not deadlines or any(not math.isfinite(value) or value < 0 for value in deadlines):
+            raise ValueError("latency deadlines must be finite and non-negative")
+        args.latency_deadlines_seconds = deadlines
         evaluation_options = {
-            "start_tolerance_seconds": args.start_tolerance,
-            "min_temporal_overlap": args.min_overlap,
+            "matching_policy": "confirmation_window",
+            "event_boundary_tolerance_seconds": args.event_boundary_tolerance,
             "forgotten_iou_threshold": args.forgotten_iou,
             "moved_iou_threshold": args.moved_iou,
             "require_prediction_object_id": args.require_object_id,
-            "on_time_lateness_seconds": args.on_time_lateness_seconds,
+            "latency_deadlines_seconds": list(deadlines),
         }
         run_fingerprint = _canonical_digest(
             {
@@ -610,34 +618,29 @@ def main() -> int:
                 _atomic_json(status_path, state)
                 print(f"  failed: {type(exc).__name__}: {exc}", flush=True)
 
-        threshold_label = f"{args.on_time_lateness_seconds:g}s"
-        report_paths = {
-            "current_compatible": run_root / "metrics" / "current_compatible.json",
-            "on_time": run_root / "metrics" / f"on_time_{threshold_label}.json",
-        }
-        evaluation_states: dict[str, dict[str, Any]] = {}
+        report_path = run_root / "metrics" / "evaluation.json"
         ignored_sample_ids = [
             sample_id
             for sample_id, entry in state["samples"].items()
             if entry.get("status") != "completed"
         ]
-        for key, on_time in (("current_compatible", False), ("on_time", True)):
-            log_path = run_root / "logs" / f"evaluate_{key}.log"
-            command = _evaluation_command(
-                root=root,
-                run_root=run_root,
-                manifest_path=manifest_path,
-                output_path=report_paths[key],
-                args=args,
-                on_time=on_time,
-                ignored_sample_ids=ignored_sample_ids,
-            )
-            code = _run_logged(command, cwd=root, log_path=log_path)
-            evaluation_states[key] = {
+        log_path = run_root / "logs" / "evaluate.log"
+        command = _evaluation_command(
+            root=root,
+            run_root=run_root,
+            manifest_path=manifest_path,
+            output_path=report_path,
+            args=args,
+            ignored_sample_ids=ignored_sample_ids,
+        )
+        code = _run_logged(command, cwd=root, log_path=log_path)
+        evaluation_states = {
+            "evaluation": {
                 "exit_code": code,
-                "report": _relative(root, report_paths[key]),
+                "report": _relative(root, report_path),
                 "log": _relative(root, log_path),
             }
+        }
         _atomic_json(status_path, state)
 
         failed = [
@@ -658,7 +661,7 @@ def main() -> int:
             "failed_samples": failed,
             "evaluation_failures": report_failures,
             "evaluation_reports": evaluation_states,
-            "on_time_lateness_seconds": args.on_time_lateness_seconds,
+            "latency_deadlines_seconds": list(deadlines),
             "annotation_policy": state.get("annotation_policy"),
             "finished_at_utc": _utc_now(),
         }
