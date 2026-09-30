@@ -181,37 +181,54 @@ class MovedEventConfig:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationThresholdConfig:
-    start_tolerance_seconds: float = 3.0
-    min_temporal_overlap: float = 0.1
+    event_boundary_tolerance_seconds: float = 1.0
     forgotten_iou_threshold: float = 0.3
     moved_iou_threshold: float = 0.3
     require_prediction_object_id: bool = False
+    latency_deadlines_seconds: tuple[float, ...] = (3.0, 5.0, 10.0)
+    # Deprecated compatibility fields. The correctness evaluator no longer
+    # uses annotation/prediction start-time proximity for event matching.
+    start_tolerance_seconds: float = 3.0
+    min_temporal_overlap: float = 0.1
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EvaluationThresholdConfig":
         _reject_unknown(
             value,
             {
+                "event_boundary_tolerance_seconds",
                 "start_tolerance_seconds",
                 "min_temporal_overlap",
                 "forgotten_iou_threshold",
                 "moved_iou_threshold",
                 "require_prediction_object_id",
+                "latency_deadlines_seconds",
             },
             name="evaluation",
         )
         require_id = value.get("require_prediction_object_id", False)
         if not isinstance(require_id, bool):
             raise ConfigValidationError("evaluation.require_prediction_object_id must be boolean")
+        raw_deadlines = value.get("latency_deadlines_seconds", (3.0, 5.0, 10.0))
+        if not isinstance(raw_deadlines, (list, tuple)) or not raw_deadlines:
+            raise ConfigValidationError(
+                "evaluation.latency_deadlines_seconds must be a non-empty array"
+            )
+        deadlines = tuple(
+            sorted(
+                {
+                    _finite_number(
+                        item,
+                        name="evaluation.latency_deadlines_seconds[]",
+                    )
+                    for item in raw_deadlines
+                }
+            )
+        )
         return cls(
-            start_tolerance_seconds=_finite_number(
-                value.get("start_tolerance_seconds", 3.0),
-                name="evaluation.start_tolerance_seconds",
-            ),
-            min_temporal_overlap=_finite_number(
-                value.get("min_temporal_overlap", 0.1),
-                name="evaluation.min_temporal_overlap",
-                maximum=1.0,
+            event_boundary_tolerance_seconds=_finite_number(
+                value.get("event_boundary_tolerance_seconds", 1.0),
+                name="evaluation.event_boundary_tolerance_seconds",
             ),
             forgotten_iou_threshold=_finite_number(
                 value.get("forgotten_iou_threshold", 0.3),
@@ -224,6 +241,16 @@ class EvaluationThresholdConfig:
                 maximum=1.0,
             ),
             require_prediction_object_id=require_id,
+            latency_deadlines_seconds=deadlines,
+            start_tolerance_seconds=_finite_number(
+                value.get("start_tolerance_seconds", 3.0),
+                name="evaluation.start_tolerance_seconds",
+            ),
+            min_temporal_overlap=_finite_number(
+                value.get("min_temporal_overlap", 0.1),
+                name="evaluation.min_temporal_overlap",
+                maximum=1.0,
+            ),
         )
 
 

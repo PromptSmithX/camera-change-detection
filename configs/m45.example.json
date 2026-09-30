@@ -34,6 +34,13 @@
       "min_outward_speed_px_per_sec": 1.0
     }
   },
+  "evaluation": {
+    "event_boundary_tolerance_seconds": 1.0,
+    "forgotten_iou_threshold": 0.3,
+    "moved_iou_threshold": 0.3,
+    "require_prediction_object_id": false,
+    "latency_deadlines_seconds": [3.0, 5.0, 10.0]
+  },
   "perception": {
     "enabled": true,
     "detector": {

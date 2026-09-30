@@ -24,6 +24,8 @@ def test_config_validation_is_model_independent_and_round_trips(tmp_path: Path):
     assert config.forgotten.min_confidence == 0.35
     assert config.moved.min_identity_score == 0.75
     assert config.evaluation.moved_iou_threshold == 0.4
+    assert config.evaluation.event_boundary_tolerance_seconds == 1.0
+    assert config.evaluation.latency_deadlines_seconds == (3.0, 5.0, 10.0)
     assert config.to_dict()["evaluation"]["min_temporal_overlap"] == 0.1
     assert validate_config(config.to_dict()).source.type == "video"
 
@@ -58,6 +60,8 @@ def test_config_rejects_invalid_threshold_and_unknown_field():
         validate_config({"evaluation": {"min_temporal_overlap": 1.1}})
     with pytest.raises(ConfigValidationError, match="Unknown root field"):
         validate_config({"model": {}})
+    with pytest.raises(ConfigValidationError, match="non-empty array"):
+        validate_config({"evaluation": {"latency_deadlines_seconds": []}})
 
 
 def test_m1_toml_config_loads_source_and_calibration(tmp_path: Path):

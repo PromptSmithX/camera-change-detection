@@ -20,7 +20,11 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from change_detection.dataset.io import read_json, resolve_repo_path, write_json
 from change_detection.domain import EventAnnotation, SampleAnnotation
-from change_detection.evaluation import EvaluationConfig, evaluate_events
+from change_detection.evaluation import (
+    EvaluationConfig,
+    evaluate_events,
+    summarize_timeliness,
+)
 
 
 def _metrics(tp: int, fp: int, fn: int) -> dict[str, float | int]:
@@ -93,6 +97,7 @@ def aggregate_results(
     split: str,
     missing_predictions: list[str],
     test_locked: bool | None = None,
+    latency_deadlines_seconds: Iterable[float] = (3.0, 5.0, 10.0),
 ) -> dict[str, Any]:
     """Aggregate per-sample evaluator output without cross-video matching."""
 
@@ -108,8 +113,8 @@ def aggregate_results(
     errors: Counter[str] = Counter()
     matches: list[dict[str, Any]] = []
     per_sample: list[dict[str, Any]] = []
-    latency_total = 0.0
-    latency_count = 0
+    confirmation_latencies: list[float] = []
+    start_delays: list[float] = []
 
     for sample_id, result in sample_results:
         _sum_counts(overall_counts, result["overall"])
@@ -120,13 +125,21 @@ def aggregate_results(
         errors.update({str(key): int(value) for key, value in result.get("error_breakdown", {}).items()})
         for match in result.get("matches", []):
             matches.append({"sample_id": sample_id, **dict(match)})
-        latency = result.get("latency", {})
-        matched_events = int(latency.get("matched_events", 0))
-        mean_delta = latency.get("mean_confirmation_delta_sec")
-        if matched_events and mean_delta is not None:
-            latency_count += matched_events
-            latency_total += matched_events * float(mean_delta)
+            latency = match.get("confirmation_latency_sec", match.get("latency_sec"))
+            if latency is not None:
+                confirmation_latencies.append(float(latency))
+            start_delay = match.get("start_delay_sec")
+            if start_delay is not None:
+                start_delays.append(float(start_delay))
         per_sample.append({"sample_id": sample_id, **dict(result)})
+
+    ground_truth_count = overall_counts["tp"] + overall_counts["fn"]
+    timeliness = summarize_timeliness(
+        confirmation_latencies=confirmation_latencies,
+        start_delays=start_delays,
+        deadlines_seconds=latency_deadlines_seconds,
+        ground_truth_count=ground_truth_count,
+    )
 
     return {
         "dataset": {
@@ -146,10 +159,13 @@ def aggregate_results(
         },
         "matches": matches,
         "error_breakdown": dict(sorted(errors.items())),
+        "timeliness": timeliness,
         "latency": {
-            "matched_events": latency_count,
+            "matched_events": len(confirmation_latencies),
             "mean_confirmation_delta_sec": (
-                latency_total / latency_count if latency_count else None
+                sum(confirmation_latencies) / len(confirmation_latencies)
+                if confirmation_latencies
+                else None
             ),
         },
         "per_sample": per_sample,
@@ -172,10 +188,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly permit evaluation of the locked/test split.",
     )
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--start-tolerance", type=float, default=3.0)
-    parser.add_argument("--min-overlap", type=float, default=0.1)
+    parser.add_argument("--event-boundary-tolerance", type=float, default=1.0)
     parser.add_argument("--forgotten-iou", type=float, default=0.3)
     parser.add_argument("--moved-iou", type=float, default=0.3)
+    parser.add_argument(
+        "--latency-deadlines-seconds",
+        type=float,
+        nargs="+",
+        default=(3.0, 5.0, 10.0),
+    )
+    parser.add_argument("--start-tolerance", type=float, default=3.0, help=argparse.SUPPRESS)
+    parser.add_argument("--min-overlap", type=float, default=0.1, help=argparse.SUPPRESS)
     parser.add_argument("--require-object-id", action="store_true")
     parser.add_argument(
         "--ignore-predictions-for",
@@ -183,15 +206,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="VIDEO_ID",
         help="Treat this sample's prediction as missing even if an artifact exists.",
-    )
-    parser.add_argument(
-        "--max-confirmation-delay-seconds",
-        type=float,
-        help=(
-            "Optional on-time gate: a prediction only matches when its confirmation "
-            "is no later than this many seconds after the ground-truth confirmation. "
-            "Both confirmation timestamps are required."
-        ),
     )
     return parser
 
@@ -219,12 +233,13 @@ def main() -> int:
         predictions_dir = root / predictions_dir
     predictions_dir = predictions_dir.resolve()
     evaluation_config = EvaluationConfig(
+        event_boundary_tolerance_seconds=args.event_boundary_tolerance,
         start_tolerance_seconds=args.start_tolerance,
         min_temporal_overlap=args.min_overlap,
         forgotten_iou_threshold=args.forgotten_iou,
         moved_iou_threshold=args.moved_iou,
         require_prediction_object_id=args.require_object_id,
-        max_confirmation_delay_seconds=args.max_confirmation_delay_seconds,
+        latency_deadlines_seconds=tuple(args.latency_deadlines_seconds),
     )
 
     sample_results: list[tuple[str, Mapping[str, Any]]] = []
@@ -260,14 +275,17 @@ def main() -> int:
         split=args.split,
         missing_predictions=missing_predictions,
         test_locked=bool(manifest.get("test_locked", False)),
+        latency_deadlines_seconds=evaluation_config.latency_deadlines_seconds,
     )
     result["evaluation"] = {
-        "start_tolerance_seconds": evaluation_config.start_tolerance_seconds,
-        "min_temporal_overlap": evaluation_config.min_temporal_overlap,
+        "matching_policy": "confirmation_window",
+        "event_boundary_tolerance_seconds": (
+            evaluation_config.event_boundary_tolerance_seconds
+        ),
         "forgotten_iou_threshold": evaluation_config.forgotten_iou_threshold,
         "moved_iou_threshold": evaluation_config.moved_iou_threshold,
         "require_prediction_object_id": evaluation_config.require_prediction_object_id,
-        "max_confirmation_delay_seconds": evaluation_config.max_confirmation_delay_seconds,
+        "latency_deadlines_seconds": list(evaluation_config.latency_deadlines_seconds),
     }
     result["dataset"]["ignored_prediction_ids"] = sorted(ignored_prediction_ids)
     print(json.dumps(result, ensure_ascii=False, indent=2))
