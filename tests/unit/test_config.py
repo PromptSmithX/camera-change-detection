@@ -115,6 +115,33 @@ def test_m2_perception_config_round_trips_and_validates():
         validate_config({"runtime": {"processing_fps": 0}})
 
 
+def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
+    config = validate_config(
+        {
+            "perception": {
+                "reference_change": {
+                    "masked_overlap": {
+                        "enabled": True,
+                        "min_overlap_ratio": 0.3,
+                        "min_changed_fraction": 0.6,
+                        "max_person_overlap_ratio": 0.05,
+                    }
+                }
+            }
+        }
+    )
+    overlap = config.perception.reference_change.masked_overlap
+    assert overlap.min_overlap_ratio == 0.3
+    assert validate_config(config.to_dict()).perception.reference_change.masked_overlap == overlap
+
+    with pytest.raises(ConfigValidationError, match="min_changed_fraction"):
+        validate_config(
+            {"perception": {"reference_change": {"masked_overlap": {"min_changed_fraction": 1.1}}}}
+        )
+    with pytest.raises(ConfigValidationError, match="enabled must be boolean"):
+        validate_config({"perception": {"reference_change": {"masked_overlap": {"enabled": 1}}}})
+
+
 def test_m3_identity_config_requires_perception_and_validates_weights():
     config = validate_config(
         {

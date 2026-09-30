@@ -67,6 +67,14 @@
       "batch_size": 8,
       "semantic_refresh_fps": 2.5,
       "crop_padding_ratio": 0.1
+    },
+    "reference_change": {
+      "masked_overlap": {
+        "enabled": true,
+        "min_overlap_ratio": 0.25,
+        "min_changed_fraction": 0.5,
+        "max_person_overlap_ratio": 0.1
+      }
     }
   },
   "association": {

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from math import hypot
 from typing import Any, Iterable
 
+from change_detection.config import MaskedOverlapConfig
 from change_detection.domain import BBox, Detection, SCENE_CHANGE_CLASS_ID
 
 
@@ -16,6 +17,13 @@ class _PersistentRegion:
     first_seen_sec: float
     last_seen_sec: float
     score: float
+
+
+@dataclass(slots=True)
+class _FrameChangeEvidence:
+    changed_before_baseline_mask: Any
+    baseline_mask: Any
+    person_mask: Any
 
 
 class ReferenceChangeDetector:
@@ -42,6 +50,7 @@ class ReferenceChangeDetector:
         edge_extra_seconds: float = 2.0,
         max_gap_seconds: float = 0.6,
         max_camera_shift_px: float = 3.0,
+        masked_overlap: MaskedOverlapConfig | None = None,
     ) -> None:
         try:
             import cv2
@@ -82,9 +91,11 @@ class ReferenceChangeDetector:
         self.edge_extra_seconds = float(edge_extra_seconds)
         self.max_gap_seconds = float(max_gap_seconds)
         self.max_camera_shift_px = float(max_camera_shift_px)
+        self.masked_overlap = masked_overlap or MaskedOverlapConfig()
         self._regions: list[_PersistentRegion] = []
         self._last_timestamp_sec: float | None = None
         self._scene_anomaly_reason: str | None = None
+        self._frame_evidence: _FrameChangeEvidence | None = None
 
     @staticmethod
     def _gray(image: Any) -> Any:
@@ -101,6 +112,7 @@ class ReferenceChangeDetector:
         self._regions.clear()
         self._last_timestamp_sec = None
         self._scene_anomaly_reason = None
+        self._frame_evidence = None
 
     @property
     def scene_anomaly_reason(self) -> str | None:
@@ -120,7 +132,55 @@ class ReferenceChangeDetector:
             "max_gap_seconds": self.max_gap_seconds,
             "max_camera_shift_px": self.max_camera_shift_px,
             "masked_baseline_box_count": len(self.baseline_boxes),
+            "masked_overlap": {
+                "enabled": self.masked_overlap.enabled,
+                "min_overlap_ratio": self.masked_overlap.min_overlap_ratio,
+                "min_changed_fraction": self.masked_overlap.min_changed_fraction,
+                "max_person_overlap_ratio": self.masked_overlap.max_person_overlap_ratio,
+            },
         }
+
+    def _min_component_area(self) -> int:
+        return max(64, round(self.roi.bbox.area * self.min_component_ratio))
+
+    def masked_overlap_score(self, detection: Detection) -> float | None:
+        """Score a YOLO box using changed pixels hidden by baseline masking.
+
+        The event state machine handles persistence, so this per-frame evidence
+        must not add another stability delay.
+        """
+
+        evidence = self._frame_evidence
+        config = self.masked_overlap
+        if not config.enabled or evidence is None:
+            return None
+        roi_box = self.roi.bbox
+        box = detection.bbox
+        x1 = max(roi_box.x1, box.x1) - roi_box.x1
+        y1 = max(roi_box.y1, box.y1) - roi_box.y1
+        x2 = min(roi_box.x2, box.x2) - roi_box.x1
+        y2 = min(roi_box.y2, box.y2) - roi_box.y1
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        baseline = evidence.baseline_mask[y1:y2, x1:x2] != 0
+        person = evidence.person_mask[y1:y2, x1:x2] != 0
+        pixel_count = baseline.size
+        if (
+            self._np.count_nonzero(baseline) / pixel_count < config.min_overlap_ratio
+            or self._np.count_nonzero(person) / pixel_count > config.max_person_overlap_ratio
+        ):
+            return None
+        visible_baseline = baseline & ~person
+        visible_count = int(self._np.count_nonzero(visible_baseline))
+        if visible_count == 0:
+            return None
+        changed = evidence.changed_before_baseline_mask[y1:y2, x1:x2] != 0
+        changed_count = int(self._np.count_nonzero(changed & visible_baseline))
+        score = changed_count / visible_count
+        if changed_count < self._min_component_area() or score < config.min_changed_fraction:
+            return None
+        return score
 
     def _person_mask(self, detections: Iterable[Detection], shape: tuple[int, int]) -> Any:
         height, width = shape
@@ -184,6 +244,7 @@ class ReferenceChangeDetector:
     def _components(self, frame: Any, detections: list[Detection]) -> list[tuple[BBox, float]] | None:
         cv2, np = self._cv2, self._np
         self._scene_anomaly_reason = None
+        self._frame_evidence = None
         current = self._aligned_gray(frame)
         if current is None:
             self._scene_anomaly_reason = "camera_shift_or_unreliable_alignment"
@@ -206,19 +267,20 @@ class ReferenceChangeDetector:
         person_mask = self._person_mask(detections, changed.shape)
         baseline_mask = self._baseline_mask(changed.shape)
         valid = cv2.bitwise_not(cv2.bitwise_or(person_mask, baseline_mask))
-        changed = cv2.bitwise_and(changed, valid)
+        changed_after_mask = cv2.bitwise_and(changed, valid)
         valid_pixels = int(cv2.countNonZero(valid))
         if valid_pixels == 0:
             return []
-        if cv2.countNonZero(changed) / valid_pixels > self.global_change_ratio:
+        if cv2.countNonZero(changed_after_mask) / valid_pixels > self.global_change_ratio:
             self._scene_anomaly_reason = "global_scene_change"
             return None
+        self._frame_evidence = _FrameChangeEvidence(changed, baseline_mask, person_mask)
 
-        contour_result = cv2.findContours(changed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contour_result = cv2.findContours(changed_after_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = contour_result[-2]
         roi_box = self.roi.bbox
         roi_area = roi_box.area
-        min_area = max(64, round(roi_area * self.min_component_ratio))
+        min_area = self._min_component_area()
         max_area = round(roi_area * self.max_component_ratio)
         result: list[tuple[BBox, float]] = []
         for contour in contours:
@@ -232,7 +294,7 @@ class ReferenceChangeDetector:
                 roi_box.x1 + int(x + width),
                 roi_box.y1 + int(y + height),
             )
-            score = float(cv2.countNonZero(changed[y : y + height, x : x + width])) / max(
+            score = float(cv2.countNonZero(changed_after_mask[y : y + height, x : x + width])) / max(
                 1, width * height
             )
             result.append((component, max(0.0, min(1.0, score))))
@@ -410,7 +472,26 @@ class HybridDetector:
         for index, detection in enumerate(yolo_detections):
             if index in consumed:
                 continue
-            output.append(replace(detection, proposal_source="yolo", event_candidate=False))
+            score = (
+                None
+                if self._person(detection)
+                or any(
+                    self._overlap_ratio(change.bbox, detection.bbox) >= 0.8
+                    for change in changes
+                )
+                else self.change_detector.masked_overlap_score(detection)
+            )
+            if score is None:
+                output.append(replace(detection, proposal_source="yolo", event_candidate=False))
+            else:
+                output.append(
+                    replace(
+                        detection,
+                        proposal_source="yolo_reference_change",
+                        reference_change_score=score,
+                        event_candidate=True,
+                    )
+                )
         self._last_timestamp_sec = timestamp_sec
         return output
 

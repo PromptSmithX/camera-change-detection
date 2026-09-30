@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -89,6 +90,26 @@ def test_first_baseline_observation_after_runtime_seek_is_not_reid_expired():
     )
 
     assert associations.matches[0].object_id == "baseline-1"
+
+
+def test_promoted_yolo_candidate_does_not_bypass_class_gate():
+    memory = _memory()
+    _update(memory, [_observation(1, (1.0, 0.0), timestamp=0.0)], 0.0)
+    candidate = replace(
+        _observation(1, (1.0, 0.0), timestamp=0.2),
+        detector_class="car",
+        detector_class_id=2,
+        event_candidate=True,
+        proposal_source="yolo_reference_change",
+    )
+    associations = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [candidate],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=0.2,
+    )
+    assert associations.matches == ()
+    assert any(item.reason == "class_mismatch" for item in associations.candidates)
 
 
 class _FakeDino:

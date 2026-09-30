@@ -150,6 +150,7 @@ def main() -> int:
                 reference_image,
                 roi,
                 baseline_boxes=(item.bbox for item in baseline.identity_objects()),
+                masked_overlap=config.perception.reference_change.masked_overlap,
             ),
         )
         event_store = EventStore()

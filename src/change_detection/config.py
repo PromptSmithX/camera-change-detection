@@ -778,6 +778,60 @@ class BaselineConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MaskedOverlapConfig:
+    """Recover new detections that cover a masked baseline object."""
+
+    enabled: bool = True
+    min_overlap_ratio: float = 0.25
+    min_changed_fraction: float = 0.5
+    max_person_overlap_ratio: float = 0.1
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "MaskedOverlapConfig":
+        name = "perception.reference_change.masked_overlap"
+        _reject_unknown(
+            value,
+            {"enabled", "min_overlap_ratio", "min_changed_fraction", "max_person_overlap_ratio"},
+            name=name,
+        )
+        enabled = value.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError(f"{name}.enabled must be boolean")
+        return cls(
+            enabled=enabled,
+            min_overlap_ratio=_finite_number(
+                value.get("min_overlap_ratio", 0.25),
+                name=f"{name}.min_overlap_ratio",
+                maximum=1.0,
+            ),
+            min_changed_fraction=_finite_number(
+                value.get("min_changed_fraction", 0.5),
+                name=f"{name}.min_changed_fraction",
+                maximum=1.0,
+            ),
+            max_person_overlap_ratio=_finite_number(
+                value.get("max_person_overlap_ratio", 0.1),
+                name=f"{name}.max_person_overlap_ratio",
+                maximum=1.0,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceChangeConfig:
+    masked_overlap: MaskedOverlapConfig = MaskedOverlapConfig()
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ReferenceChangeConfig":
+        _reject_unknown(value, {"masked_overlap"}, name="perception.reference_change")
+        return cls(
+            masked_overlap=MaskedOverlapConfig.from_mapping(
+                _mapping(value.get("masked_overlap", {}), name="perception.reference_change.masked_overlap")
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PerceptionConfig:
     """M2 perception configuration.
 
@@ -789,10 +843,11 @@ class PerceptionConfig:
     detector: DetectorConfig = DetectorConfig()
     tracker: TrackerConfig = TrackerConfig()
     encoder: EncoderConfig = EncoderConfig()
+    reference_change: ReferenceChangeConfig = ReferenceChangeConfig()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "PerceptionConfig":
-        _reject_unknown(value, {"enabled", "detector", "tracker", "encoder"}, name="perception")
+        _reject_unknown(value, {"enabled", "detector", "tracker", "encoder", "reference_change"}, name="perception")
         enabled = value.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ConfigValidationError("perception.enabled must be boolean")
@@ -806,6 +861,9 @@ class PerceptionConfig:
             ),
             encoder=EncoderConfig.from_mapping(
                 _mapping(value.get("encoder", {}), name="perception.encoder")
+            ),
+            reference_change=ReferenceChangeConfig.from_mapping(
+                _mapping(value.get("reference_change", {}), name="perception.reference_change")
             ),
         )
 
