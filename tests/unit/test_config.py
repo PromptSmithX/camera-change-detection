@@ -120,6 +120,19 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
         {
             "perception": {
                 "reference_change": {
+                    "min_component_ratio": 0.0025,
+                    "min_component_area_px": 64,
+                    "stable_seconds": 1.0,
+                    "fusion_min_overlap_ratio": 0.3,
+                    "fusion_min_iou": 0.15,
+                    "small_component": {
+                        "enabled": True,
+                        "min_component_ratio": 0.00075,
+                        "min_component_area_px": 48,
+                        "stable_seconds": 2.0,
+                        "min_fill_ratio": 0.55,
+                        "min_aspect_ratio": 0.5,
+                    },
                     "masked_overlap": {
                         "enabled": True,
                         "min_overlap_ratio": 0.3,
@@ -130,6 +143,15 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
             }
         }
     )
+    reference_change = config.perception.reference_change
+    assert reference_change.min_component_ratio == 0.0025
+    assert reference_change.min_component_area_px == 64
+    assert reference_change.stable_seconds == 1.0
+    assert reference_change.fusion_min_overlap_ratio == 0.3
+    assert reference_change.fusion_min_iou == 0.15
+    assert reference_change.small_component.enabled is True
+    assert reference_change.small_component.min_component_area_px == 48
+    assert reference_change.small_component.min_fill_ratio == 0.55
     overlap = config.perception.reference_change.masked_overlap
     assert overlap.min_overlap_ratio == 0.3
     assert validate_config(config.to_dict()).perception.reference_change.masked_overlap == overlap
@@ -140,6 +162,20 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
         )
     with pytest.raises(ConfigValidationError, match="enabled must be boolean"):
         validate_config({"perception": {"reference_change": {"masked_overlap": {"enabled": 1}}}})
+    with pytest.raises(ConfigValidationError, match="fusion_min_iou"):
+        validate_config({"perception": {"reference_change": {"fusion_min_iou": 1.1}}})
+    with pytest.raises(ConfigValidationError, match="min_component_ratio"):
+        validate_config({"perception": {"reference_change": {"min_component_ratio": 0}}})
+    with pytest.raises(ConfigValidationError, match="min_component_area_px"):
+        validate_config({"perception": {"reference_change": {"min_component_area_px": 0}}})
+    with pytest.raises(ConfigValidationError, match="min_aspect_ratio"):
+        validate_config(
+            {
+                "perception": {
+                    "reference_change": {"small_component": {"min_aspect_ratio": 1.1}}
+                }
+            }
+        )
 
 
 def test_m3_identity_config_requires_perception_and_validates_weights():

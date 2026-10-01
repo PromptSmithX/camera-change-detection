@@ -112,6 +112,27 @@ def test_promoted_yolo_candidate_does_not_bypass_class_gate():
     assert any(item.reason == "class_mismatch" for item in associations.candidates)
 
 
+def test_fused_candidate_keeps_class_metadata_without_fragmenting_identity():
+    memory = _memory()
+    _update(memory, [_observation(1, (1.0, 0.0), timestamp=0.0)], 0.0)
+    candidate = replace(
+        _observation(21, (1.0, 0.0), timestamp=0.2),
+        detector_class="suitcase",
+        detector_class_id=28,
+        event_candidate=True,
+        proposal_source="fused",
+    )
+    associations = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [candidate],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=0.2,
+    )
+
+    assert associations.matches[0].object_id == "baseline-1"
+    assert associations.matches[0].score.class_compatibility == 1.0
+
+
 class _FakeDino:
     def to(self, _device):
         return self

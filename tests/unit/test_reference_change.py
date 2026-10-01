@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from change_detection.config import MaskedOverlapConfig
+from change_detection.config import MaskedOverlapConfig, SmallComponentConfig
 from change_detection.domain import BBox, Detection, SCENE_CHANGE_CLASS_ID
 from change_detection.infrastructure.models import HybridDetector, ReferenceChangeDetector
 from change_detection.scene import BBoxROI
@@ -127,3 +127,124 @@ def test_masked_overlap_does_not_duplicate_existing_contour_proposal() -> None:
     assert len(output) == 2
     assert sum(item.event_candidate for item in output) == 1
     assert {item.proposal_source for item in output} == {"fused", "yolo"}
+    fused = next(item for item in output if item.proposal_source == "fused")
+    assert fused.bbox == overlapping
+    assert fused.change_bbox == BBox(40, 40, 66, 56)
+    assert (fused.class_id, fused.class_name) == (7, "truck")
+
+
+def test_fusion_rejects_tiny_change_inside_unrelated_large_yolo_box() -> None:
+    class _Changes:
+        def detect(self, frame, detections, *, timestamp_sec):
+            del frame, detections, timestamp_sec
+            box = BBox(50, 50, 60, 60)
+            return [
+                Detection(
+                    box,
+                    0.8,
+                    SCENE_CHANGE_CLASS_ID,
+                    "scene_change",
+                    proposal_source="reference_change",
+                    change_bbox=box,
+                )
+            ]
+
+        def masked_overlap_score(self, detection):
+            del detection
+            return None
+
+    large_box = BBox(0, 0, 160, 120)
+    hybrid = HybridDetector(
+        _Detector([Detection(large_box, 0.9, 7, "truck")]),
+        _Changes(),
+    )
+
+    output = hybrid.detect_at(
+        np.zeros((120, 160, 3), dtype=np.uint8),
+        ROI,
+        timestamp_sec=0.0,
+    )
+
+    assert {item.proposal_source for item in output} == {"reference_change", "yolo"}
+    assert next(item for item in output if item.proposal_source == "reference_change").bbox == BBox(
+        50, 50, 60, 60
+    )
+
+
+def test_fusion_thresholds_are_validated() -> None:
+    reference, _changed = _frames()
+    change_detector = ReferenceChangeDetector(reference, ROI)
+
+    with pytest.raises(ValueError, match="fusion_min_overlap_ratio"):
+        HybridDetector(_Detector([]), change_detector, fusion_min_overlap_ratio=1.1)
+    with pytest.raises(ValueError, match="fusion_min_iou"):
+        HybridDetector(_Detector([]), change_detector, fusion_min_iou=-0.1)
+
+
+def test_small_stationary_change_is_exposed_only_after_extended_stability() -> None:
+    reference = np.random.default_rng(19).integers(0, 32, (120, 160, 3), dtype=np.uint8)
+    changed = reference.copy()
+    changed[55:65, 65:76] = 255
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        min_component_ratio=0.01,
+        small_component=SmallComponentConfig(enabled=True),
+    )
+
+    assert detector.detect(reference, [], timestamp_sec=0.0) == []
+    proposals = []
+    for step in range(1, 12):
+        proposals = detector.detect(changed, [], timestamp_sec=step * 0.2)
+        if step < 11:
+            assert proposals == []
+
+    assert len(proposals) == 1
+    assert proposals[0].proposal_source == "reference_change"
+    assert proposals[0].event_candidate is True
+    assert proposals[0].bbox.iou(BBox(65, 55, 76, 65)) >= 0.5
+
+
+def test_small_transient_change_does_not_survive_stability_gate() -> None:
+    reference = np.random.default_rng(23).integers(0, 32, (120, 160, 3), dtype=np.uint8)
+    changed = reference.copy()
+    changed[55:65, 65:76] = 255
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        min_component_ratio=0.01,
+        small_component=SmallComponentConfig(enabled=True),
+    )
+
+    assert detector.detect(changed, [], timestamp_sec=0.0) == []
+    assert detector.detect(reference, [], timestamp_sec=0.8) == []
+    assert detector.detect(reference, [], timestamp_sec=1.6) == []
+    assert detector.detect(changed, [], timestamp_sec=2.4) == []
+
+
+def test_small_elongated_or_sparse_change_is_rejected() -> None:
+    reference = np.random.default_rng(29).integers(0, 32, (120, 160, 3), dtype=np.uint8)
+    elongated = reference.copy()
+    elongated[55:61, 60:82] = 255
+    sparse = reference.copy()
+    sparse[55:63, 65:69] = 255
+    sparse[62:70, 76:80] = 255
+    small_component = SmallComponentConfig(enabled=True)
+
+    elongated_detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        min_component_ratio=0.01,
+        small_component=small_component,
+    )
+    sparse_detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        min_component_ratio=0.01,
+        small_component=small_component,
+    )
+
+    for step in range(12):
+        timestamp = step * 0.2
+        assert elongated_detector.detect(elongated, [], timestamp_sec=timestamp) == []
+        assert sparse_detector.detect(sparse, [], timestamp_sec=timestamp) == []

@@ -818,15 +818,143 @@ class MaskedOverlapConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SmallComponentConfig:
+    """Conservative fallback for persistent changes below the normal area floor."""
+
+    enabled: bool = False
+    min_component_ratio: float = 0.00075
+    min_component_area_px: int = 48
+    stable_seconds: float = 2.0
+    min_fill_ratio: float = 0.55
+    min_aspect_ratio: float = 0.50
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "SmallComponentConfig":
+        name = "perception.reference_change.small_component"
+        _reject_unknown(
+            value,
+            {
+                "enabled",
+                "min_component_ratio",
+                "min_component_area_px",
+                "stable_seconds",
+                "min_fill_ratio",
+                "min_aspect_ratio",
+            },
+            name=name,
+        )
+        enabled = value.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError(f"{name}.enabled must be boolean")
+        raw_min_area = value.get("min_component_area_px", 48)
+        if isinstance(raw_min_area, bool):
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            )
+        try:
+            min_component_area_px = int(raw_min_area)
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            ) from exc
+        if min_component_area_px < 1:
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            )
+        return cls(
+            enabled=enabled,
+            min_component_ratio=_finite_number(
+                value.get("min_component_ratio", 0.00075),
+                name=f"{name}.min_component_ratio",
+                minimum=0.000001,
+                maximum=1.0,
+            ),
+            min_component_area_px=min_component_area_px,
+            stable_seconds=_finite_number(
+                value.get("stable_seconds", 2.0),
+                name=f"{name}.stable_seconds",
+            ),
+            min_fill_ratio=_finite_number(
+                value.get("min_fill_ratio", 0.55),
+                name=f"{name}.min_fill_ratio",
+                maximum=1.0,
+            ),
+            min_aspect_ratio=_finite_number(
+                value.get("min_aspect_ratio", 0.50),
+                name=f"{name}.min_aspect_ratio",
+                maximum=1.0,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceChangeConfig:
+    min_component_ratio: float = 0.0025
+    min_component_area_px: int = 64
+    stable_seconds: float = 1.0
+    fusion_min_overlap_ratio: float = 0.25
+    fusion_min_iou: float = 0.10
+    small_component: SmallComponentConfig = SmallComponentConfig()
     masked_overlap: MaskedOverlapConfig = MaskedOverlapConfig()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ReferenceChangeConfig":
-        _reject_unknown(value, {"masked_overlap"}, name="perception.reference_change")
+        name = "perception.reference_change"
+        _reject_unknown(
+            value,
+            {
+                "min_component_ratio",
+                "min_component_area_px",
+                "stable_seconds",
+                "fusion_min_overlap_ratio",
+                "fusion_min_iou",
+                "small_component",
+                "masked_overlap",
+            },
+            name=name,
+        )
+        raw_min_area = value.get("min_component_area_px", 64)
+        if isinstance(raw_min_area, bool):
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            )
+        try:
+            min_component_area_px = int(raw_min_area)
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            ) from exc
+        if min_component_area_px < 1:
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            )
         return cls(
+            min_component_ratio=_finite_number(
+                value.get("min_component_ratio", 0.0025),
+                name=f"{name}.min_component_ratio",
+                minimum=0.000001,
+                maximum=1.0,
+            ),
+            min_component_area_px=min_component_area_px,
+            stable_seconds=_finite_number(
+                value.get("stable_seconds", 1.0),
+                name=f"{name}.stable_seconds",
+            ),
+            fusion_min_overlap_ratio=_finite_number(
+                value.get("fusion_min_overlap_ratio", 0.25),
+                name=f"{name}.fusion_min_overlap_ratio",
+                maximum=1.0,
+            ),
+            fusion_min_iou=_finite_number(
+                value.get("fusion_min_iou", 0.10),
+                name=f"{name}.fusion_min_iou",
+                maximum=1.0,
+            ),
+            small_component=SmallComponentConfig.from_mapping(
+                _mapping(value.get("small_component", {}), name=f"{name}.small_component")
+            ),
             masked_overlap=MaskedOverlapConfig.from_mapping(
-                _mapping(value.get("masked_overlap", {}), name="perception.reference_change.masked_overlap")
+                _mapping(value.get("masked_overlap", {}), name=f"{name}.masked_overlap")
             )
         )
 

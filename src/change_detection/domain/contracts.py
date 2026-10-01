@@ -162,6 +162,7 @@ class Detection:
     proposal_source: str = "yolo"
     reference_change_score: float | None = None
     event_candidate: bool = True
+    change_bbox: BBox | None = None
 
     def __post_init__(self) -> None:
         if not isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
@@ -181,6 +182,8 @@ class Detection:
             raise ValueError("Detection reference_change_score must be between 0 and 1")
         if not isinstance(self.event_candidate, bool):
             raise ValueError("Detection event_candidate must be a boolean")
+        if self.change_bbox is not None and self.change_bbox.area <= 0:
+            raise ValueError("Detection change_bbox must have positive area")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -191,6 +194,7 @@ class Detection:
             "proposal_source": self.proposal_source,
             "reference_change_score": self.reference_change_score,
             "event_candidate": self.event_candidate,
+            "change_bbox": self.change_bbox.to_list() if self.change_bbox is not None else None,
         }
 
 
@@ -263,6 +267,7 @@ class Observation:
     proposal_source: str = "yolo"
     reference_change_score: float | None = None
     event_candidate: bool = True
+    change_bbox: BBox | None = None
 
     def __post_init__(self) -> None:
         if self.frame_index < 0:
@@ -288,6 +293,8 @@ class Observation:
             raise ValueError("Observation reference_change_score must be between 0 and 1")
         if not isinstance(self.event_candidate, bool):
             raise ValueError("Observation event_candidate must be a boolean")
+        if self.change_bbox is not None and self.change_bbox.area <= 0:
+            raise ValueError("Observation change_bbox must have positive area")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -303,6 +310,7 @@ class Observation:
             "proposal_source": self.proposal_source,
             "reference_change_score": self.reference_change_score,
             "event_candidate": self.event_candidate,
+            "change_bbox": self.change_bbox.to_list() if self.change_bbox is not None else None,
         }
 
 

@@ -45,6 +45,7 @@ class AssociationEngine:
             if memory.detector_class_id == observation.detector_class_id
             or memory.detector_class_id == SCENE_CHANGE_CLASS_ID
             or observation.detector_class_id == SCENE_CHANGE_CLASS_ID
+            or observation.proposal_source == "fused"
             else 0.0
         )
         total = (

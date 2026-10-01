@@ -150,8 +150,20 @@ def main() -> int:
                 reference_image,
                 roi,
                 baseline_boxes=(item.bbox for item in baseline.identity_objects()),
+                min_component_ratio=(
+                    config.perception.reference_change.min_component_ratio
+                ),
+                min_component_area_px=(
+                    config.perception.reference_change.min_component_area_px
+                ),
+                stable_seconds=config.perception.reference_change.stable_seconds,
+                small_component=config.perception.reference_change.small_component,
                 masked_overlap=config.perception.reference_change.masked_overlap,
             ),
+            fusion_min_overlap_ratio=(
+                config.perception.reference_change.fusion_min_overlap_ratio
+            ),
+            fusion_min_iou=config.perception.reference_change.fusion_min_iou,
         )
         event_store = EventStore()
         event_engine = EventEngine(forgotten=config.forgotten, moved=config.moved)

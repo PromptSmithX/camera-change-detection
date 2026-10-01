@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from math import hypot
 from typing import Any, Iterable
 
-from change_detection.config import MaskedOverlapConfig
+from change_detection.config import MaskedOverlapConfig, SmallComponentConfig
 from change_detection.domain import BBox, Detection, SCENE_CHANGE_CLASS_ID
 
 
@@ -17,6 +17,7 @@ class _PersistentRegion:
     first_seen_sec: float
     last_seen_sec: float
     score: float
+    small_component: bool = False
 
 
 @dataclass(slots=True)
@@ -43,6 +44,7 @@ class ReferenceChangeDetector:
         baseline_boxes: Iterable[BBox] = (),
         pixel_threshold: int = 25,
         min_component_ratio: float = 0.0025,
+        min_component_area_px: int = 64,
         max_component_ratio: float = 0.25,
         global_change_ratio: float = 0.35,
         stable_seconds: float = 1.0,
@@ -50,6 +52,7 @@ class ReferenceChangeDetector:
         edge_extra_seconds: float = 2.0,
         max_gap_seconds: float = 0.6,
         max_camera_shift_px: float = 3.0,
+        small_component: SmallComponentConfig | None = None,
         masked_overlap: MaskedOverlapConfig | None = None,
     ) -> None:
         try:
@@ -64,6 +67,12 @@ class ReferenceChangeDetector:
             raise ValueError("pixel_threshold must be between 0 and 255")
         if not 0.0 < float(min_component_ratio) < float(max_component_ratio) <= 1.0:
             raise ValueError("component ratios must satisfy 0 < min < max <= 1")
+        if (
+            isinstance(min_component_area_px, bool)
+            or int(min_component_area_px) != min_component_area_px
+            or int(min_component_area_px) < 1
+        ):
+            raise ValueError("min_component_area_px must be a positive integer")
         if not 0.0 < float(global_change_ratio) <= 1.0:
             raise ValueError("global_change_ratio must be in (0, 1]")
         if min(
@@ -84,6 +93,7 @@ class ReferenceChangeDetector:
         self.baseline_boxes = tuple(baseline_boxes)
         self.pixel_threshold = int(pixel_threshold)
         self.min_component_ratio = float(min_component_ratio)
+        self.min_component_area_px = int(min_component_area_px)
         self.max_component_ratio = float(max_component_ratio)
         self.global_change_ratio = float(global_change_ratio)
         self.stable_seconds = float(stable_seconds)
@@ -91,6 +101,7 @@ class ReferenceChangeDetector:
         self.edge_extra_seconds = float(edge_extra_seconds)
         self.max_gap_seconds = float(max_gap_seconds)
         self.max_camera_shift_px = float(max_camera_shift_px)
+        self.small_component = small_component or SmallComponentConfig()
         self.masked_overlap = masked_overlap or MaskedOverlapConfig()
         self._regions: list[_PersistentRegion] = []
         self._last_timestamp_sec: float | None = None
@@ -124,6 +135,7 @@ class ReferenceChangeDetector:
             "name": "reference_change",
             "pixel_threshold": self.pixel_threshold,
             "min_component_ratio": self.min_component_ratio,
+            "min_component_area_px": self.min_component_area_px,
             "max_component_ratio": self.max_component_ratio,
             "global_change_ratio": self.global_change_ratio,
             "stable_seconds": self.stable_seconds,
@@ -132,6 +144,14 @@ class ReferenceChangeDetector:
             "max_gap_seconds": self.max_gap_seconds,
             "max_camera_shift_px": self.max_camera_shift_px,
             "masked_baseline_box_count": len(self.baseline_boxes),
+            "small_component": {
+                "enabled": self.small_component.enabled,
+                "min_component_ratio": self.small_component.min_component_ratio,
+                "min_component_area_px": self.small_component.min_component_area_px,
+                "stable_seconds": self.small_component.stable_seconds,
+                "min_fill_ratio": self.small_component.min_fill_ratio,
+                "min_aspect_ratio": self.small_component.min_aspect_ratio,
+            },
             "masked_overlap": {
                 "enabled": self.masked_overlap.enabled,
                 "min_overlap_ratio": self.masked_overlap.min_overlap_ratio,
@@ -141,7 +161,16 @@ class ReferenceChangeDetector:
         }
 
     def _min_component_area(self) -> int:
-        return max(64, round(self.roi.bbox.area * self.min_component_ratio))
+        return max(
+            self.min_component_area_px,
+            round(self.roi.bbox.area * self.min_component_ratio),
+        )
+
+    def _small_min_component_area(self) -> int:
+        return max(
+            self.small_component.min_component_area_px,
+            round(self.roi.bbox.area * self.small_component.min_component_ratio),
+        )
 
     def masked_overlap_score(self, detection: Detection) -> float | None:
         """Score a YOLO box using changed pixels hidden by baseline masking.
@@ -241,7 +270,11 @@ class ReferenceChangeDetector:
             borderMode=self._cv2.BORDER_REPLICATE,
         )
 
-    def _components(self, frame: Any, detections: list[Detection]) -> list[tuple[BBox, float]] | None:
+    def _components(
+        self,
+        frame: Any,
+        detections: list[Detection],
+    ) -> list[tuple[BBox, float, bool]] | None:
         cv2, np = self._cv2, self._np
         self._scene_anomaly_reason = None
         self._frame_evidence = None
@@ -281,12 +314,27 @@ class ReferenceChangeDetector:
         roi_box = self.roi.bbox
         roi_area = roi_box.area
         min_area = self._min_component_area()
+        small_min_area = (
+            self._small_min_component_area()
+            if self.small_component.enabled
+            else min_area
+        )
         max_area = round(roi_area * self.max_component_ratio)
-        result: list[tuple[BBox, float]] = []
+        result: list[tuple[BBox, float, bool]] = []
         for contour in contours:
             x, y, width, height = cv2.boundingRect(contour)
             area = int(cv2.contourArea(contour))
-            if area < min_area or area > max_area or width < 8 or height < 8:
+            if area < small_min_area or area > max_area or width < 8 or height < 8:
+                continue
+            score = float(cv2.countNonZero(changed_after_mask[y : y + height, x : x + width])) / max(
+                1, width * height
+            )
+            is_small = area < min_area
+            aspect_ratio = min(width, height) / max(width, height)
+            if is_small and (
+                score < self.small_component.min_fill_ratio
+                or aspect_ratio < self.small_component.min_aspect_ratio
+            ):
                 continue
             component = BBox(
                 roi_box.x1 + int(x),
@@ -294,10 +342,7 @@ class ReferenceChangeDetector:
                 roi_box.x1 + int(x + width),
                 roi_box.y1 + int(y + height),
             )
-            score = float(cv2.countNonZero(changed_after_mask[y : y + height, x : x + width])) / max(
-                1, width * height
-            )
-            result.append((component, max(0.0, min(1.0, score))))
+            result.append((component, max(0.0, min(1.0, score)), is_small))
         return result
 
     def _is_edge_component(self, box: BBox) -> bool:
@@ -341,7 +386,7 @@ class ReferenceChangeDetector:
         used_regions: set[int] = set()
         proposals: list[Detection] = []
         roi_diagonal = max(1.0, hypot(self.roi.bbox.width, self.roi.bbox.height))
-        for box, score in components:
+        for box, score, is_small in components:
             candidates: list[tuple[float, float, int]] = []
             for index, region in enumerate(self._regions):
                 if index in used_regions:
@@ -355,6 +400,10 @@ class ReferenceChangeDetector:
                 _, _, index = max(candidates)
                 region = self._regions[index]
                 used_regions.add(index)
+                if region.small_component != is_small:
+                    region.small_component = is_small
+                    region.anchor_bbox = box
+                    region.first_seen_sec = timestamp_sec
                 if (
                     self._matching_distance(box, region.anchor_bbox)
                     > self.stationary_tolerance_px
@@ -373,11 +422,22 @@ class ReferenceChangeDetector:
                 region.last_seen_sec = timestamp_sec
                 region.score = max(region.score * 0.6, score)
             else:
-                region = _PersistentRegion(box, box, timestamp_sec, timestamp_sec, score)
+                region = _PersistentRegion(
+                    box,
+                    box,
+                    timestamp_sec,
+                    timestamp_sec,
+                    score,
+                    small_component=is_small,
+                )
                 self._regions.append(region)
                 used_regions.add(len(self._regions) - 1)
 
-            required_seconds = self.stable_seconds + (
+            required_seconds = (
+                self.small_component.stable_seconds
+                if region.small_component
+                else self.stable_seconds
+            ) + (
                 self.edge_extra_seconds if self._is_edge_component(region.bbox) else 0.0
             )
             if timestamp_sec - region.first_seen_sec + 1e-9 < required_seconds:
@@ -391,6 +451,7 @@ class ReferenceChangeDetector:
                     proposal_source="reference_change",
                     reference_change_score=region.score,
                     event_candidate=True,
+                    change_bbox=region.bbox,
                 )
             )
 
@@ -401,9 +462,22 @@ class ReferenceChangeDetector:
 class HybridDetector:
     """Combine YOLO semantics with persistent reference-change proposals."""
 
-    def __init__(self, detector: Any, change_detector: ReferenceChangeDetector) -> None:
+    def __init__(
+        self,
+        detector: Any,
+        change_detector: ReferenceChangeDetector,
+        *,
+        fusion_min_overlap_ratio: float = 0.25,
+        fusion_min_iou: float = 0.10,
+    ) -> None:
+        if not 0.0 <= float(fusion_min_overlap_ratio) <= 1.0:
+            raise ValueError("fusion_min_overlap_ratio must be between 0 and 1")
+        if not 0.0 <= float(fusion_min_iou) <= 1.0:
+            raise ValueError("fusion_min_iou must be between 0 and 1")
         self.detector = detector
         self.change_detector = change_detector
+        self.fusion_min_overlap_ratio = float(fusion_min_overlap_ratio)
+        self.fusion_min_iou = float(fusion_min_iou)
         self._last_timestamp_sec: float | None = None
 
     @property
@@ -412,6 +486,8 @@ class HybridDetector:
             "name": "yolo_reference_change",
             "detector": getattr(self.detector, "metadata", {}),
             "reference_change": self.change_detector.metadata,
+            "fusion_min_overlap_ratio": self.fusion_min_overlap_ratio,
+            "fusion_min_iou": self.fusion_min_iou,
         }
 
     @property
@@ -433,6 +509,12 @@ class HybridDetector:
         intersection = max(0, x2 - x1) * max(0, y2 - y1)
         return intersection / max(1, min(left.area, right.area))
 
+    def _fusion_match(self, change: BBox, detection: BBox) -> bool:
+        return (
+            self._overlap_ratio(change, detection) >= self.fusion_min_overlap_ratio
+            and change.iou(detection) >= self.fusion_min_iou
+        )
+
     def detect_at(self, frame: Any, roi: Any, *, timestamp_sec: float) -> list[Detection]:
         from dataclasses import replace
 
@@ -446,24 +528,35 @@ class HybridDetector:
         output: list[Detection] = []
         for change in changes:
             matches = [
-                (self._overlap_ratio(change.bbox, detection.bbox), index, detection)
+                (
+                    change.bbox.iou(detection.bbox),
+                    self._overlap_ratio(change.bbox, detection.bbox),
+                    detection.confidence,
+                    index,
+                    detection,
+                )
                 for index, detection in enumerate(yolo_detections)
                 if index not in consumed
                 and not self._person(detection)
-                and self._overlap_ratio(change.bbox, detection.bbox) >= 0.25
+                and self._fusion_match(change.bbox, detection.bbox)
             ]
             if matches:
-                _ratio, index, detection = max(matches, key=lambda item: item[0])
+                _iou, _overlap, _confidence, index, detection = max(
+                    matches,
+                    key=lambda item: (item[0], item[1], item[2]),
+                )
                 consumed.add(index)
                 output.append(
                     Detection(
-                        bbox=change.bbox,
+                        bbox=detection.bbox,
                         confidence=max(change.confidence, detection.confidence),
-                        class_id=SCENE_CHANGE_CLASS_ID,
-                        class_name="scene_change",
+                        class_id=detection.class_id,
+                        class_name=detection.class_name,
+                        mask=detection.mask,
                         proposal_source="fused",
                         reference_change_score=change.reference_change_score,
                         event_candidate=True,
+                        change_bbox=change.bbox,
                     )
                 )
             else:
@@ -476,7 +569,7 @@ class HybridDetector:
                 None
                 if self._person(detection)
                 or any(
-                    self._overlap_ratio(change.bbox, detection.bbox) >= 0.8
+                    self._fusion_match(change.bbox, detection.bbox)
                     for change in changes
                 )
                 else self.change_detector.masked_overlap_score(detection)
