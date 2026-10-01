@@ -71,6 +71,9 @@ class ObservationBuilder:
                     event_candidate=(
                         detection.event_candidate if detection is not None else False
                     ),
+                    change_bbox=(
+                        detection.change_bbox if detection is not None else None
+                    ),
                 )
             )
         return observations

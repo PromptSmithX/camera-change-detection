@@ -25,14 +25,24 @@ def _frame(index: int = 0) -> FrameContext:
 
 
 def test_detection_track_and_observation_serialize_without_framework_types():
-    detection = Detection(BBox(12, 8, 22, 18), 0.8, 2, "car")
+    change_bbox = BBox(14, 10, 20, 16)
+    detection = Detection(
+        BBox(12, 8, 22, 18),
+        0.8,
+        2,
+        "car",
+        proposal_source="fused",
+        change_bbox=change_bbox,
+    )
     track = Track(7, detection.bbox, detection.confidence, detection.class_id, detection.class_name, 0)
     observation = ObservationBuilder().build(_frame(), [detection], [track], _roi())[0]
 
     assert detection.to_dict()["bbox"] == [12, 8, 22, 18]
+    assert detection.to_dict()["change_bbox"] == [14, 10, 20, 16]
     assert track.to_dict()["tracker_id"] == 7
     assert observation.to_dict()["centroid"] == [17.0, 13.0]
     assert observation.to_dict()["tracker_id"] == 7
+    assert observation.to_dict()["change_bbox"] == [14, 10, 20, 16]
 
 
 class _FakeBoxes:
