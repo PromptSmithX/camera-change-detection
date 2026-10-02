@@ -138,7 +138,20 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
                         "min_overlap_ratio": 0.3,
                         "min_changed_fraction": 0.6,
                         "max_person_overlap_ratio": 0.05,
-                    }
+                    },
+                    "alignment": {
+                        "min_response": 0.03,
+                        "max_translation_ratio": 0.025,
+                    },
+                    "baseline_residual": {
+                        "enabled": True,
+                        "min_component_ratio": 0.001,
+                        "min_component_area_px": 72,
+                        "stable_seconds": 2.5,
+                        "min_fill_ratio": 0.6,
+                        "max_person_overlap_ratio": 0.2,
+                        "max_baseline_coverage_ratio": 0.75,
+                    },
                 }
             }
         }
@@ -154,6 +167,10 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
     assert reference_change.small_component.min_fill_ratio == 0.55
     overlap = config.perception.reference_change.masked_overlap
     assert overlap.min_overlap_ratio == 0.3
+    assert reference_change.alignment.max_translation_ratio == 0.025
+    assert reference_change.baseline_residual.enabled is True
+    assert reference_change.baseline_residual.stable_seconds == 2.5
+    assert reference_change.baseline_residual.max_baseline_coverage_ratio == 0.75
     assert validate_config(config.to_dict()).perception.reference_change.masked_overlap == overlap
 
     with pytest.raises(ConfigValidationError, match="min_changed_fraction"):
@@ -162,6 +179,24 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
         )
     with pytest.raises(ConfigValidationError, match="enabled must be boolean"):
         validate_config({"perception": {"reference_change": {"masked_overlap": {"enabled": 1}}}})
+    with pytest.raises(ConfigValidationError, match="max_translation_ratio"):
+        validate_config(
+            {"perception": {"reference_change": {"alignment": {"max_translation_ratio": 0}}}}
+        )
+    with pytest.raises(ConfigValidationError, match="min_component_area_px"):
+        validate_config(
+            {"perception": {"reference_change": {"baseline_residual": {"min_component_area_px": 0}}}}
+        )
+    with pytest.raises(ConfigValidationError, match="max_baseline_coverage_ratio"):
+        validate_config(
+            {
+                "perception": {
+                    "reference_change": {
+                        "baseline_residual": {"max_baseline_coverage_ratio": 1.1}
+                    }
+                }
+            }
+        )
     with pytest.raises(ConfigValidationError, match="fusion_min_iou"):
         validate_config({"perception": {"reference_change": {"fusion_min_iou": 1.1}}})
     with pytest.raises(ConfigValidationError, match="min_component_ratio"):

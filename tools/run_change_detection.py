@@ -159,6 +159,10 @@ def main() -> int:
                 stable_seconds=config.perception.reference_change.stable_seconds,
                 small_component=config.perception.reference_change.small_component,
                 masked_overlap=config.perception.reference_change.masked_overlap,
+                alignment=config.perception.reference_change.alignment,
+                baseline_residual=(
+                    config.perception.reference_change.baseline_residual
+                ),
             ),
             fusion_min_overlap_ratio=(
                 config.perception.reference_change.fusion_min_overlap_ratio

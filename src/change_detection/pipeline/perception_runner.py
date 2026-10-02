@@ -274,6 +274,16 @@ class PerceptionRunner:
                                         if scene_status is not None
                                         else {}
                                     ),
+                                    **(
+                                        {"scene_alignment": scene_debug}
+                                        if (
+                                            scene_debug := getattr(
+                                                self.detector, "scene_debug", None
+                                            )
+                                        )
+                                        is not None
+                                        else {}
+                                    ),
                                     "assignments": [
                                         {
                                             **item.to_dict(),

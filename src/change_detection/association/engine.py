@@ -68,7 +68,8 @@ class AssociationEngine:
         age = timestamp_sec - memory.last_seen_sec
         contour_candidate = (
             observation.event_candidate
-            and observation.proposal_source in {"reference_change", "fused"}
+            and observation.proposal_source
+            in {"reference_change", "baseline_residual", "fused"}
         )
         baseline_reidentified = False
         baseline_candidate_reidentified = False

@@ -185,5 +185,18 @@ Pass `--output runs/validation/my-run` to choose a stable path; after an
 interruption, use the same path with `--resume`. Resume is rejected if the
 manifest, media, base config, evaluation settings, or pipeline code changed.
 
-The test split is deliberately opt-in: use the locked manifest and pass
-`--allow-test` explicitly.
+The test split is deliberately opt-in. Run it through the batch runner with
+the locked manifest; test progress hides sample identifiers and the evaluator
+emits aggregate-only metrics:
+
+```text
+python tools/run_validation.py \
+  --split test \
+  --allow-test \
+  --manifest data/benchmark/v2/manifest.locked.json \
+  --config configs/m45.example.json \
+  --output runs/test/my-run
+```
+
+Test runs may be repeated to report generalization, but test metrics must not
+be used to tune code or thresholds. Detailed diagnosis remains validation-only.
