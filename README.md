@@ -144,6 +144,22 @@ transitions. Raw embeddings are not written to run logs.
 
 ## M4/M5 event quickstart
 
+Canonical proposal consolidation is controlled by
+`perception.proposal_fusion.enabled`. It is opt-in: omitted or `false` keeps
+the legacy detector-to-tracker behavior. When enabled, YOLO, reference-change,
+and baseline-residual evidence is consolidated before ByteTrack; lineage is
+then retained in detection, observation, memory-history, and event artifacts.
+
+Run all four proposal-source ablations on validation only with:
+
+```powershell
+python tools/run_proposal_ablation.py --config configs/m45.example.json
+```
+
+The ablation command has no test-split option and writes
+`ablation_report.json` under `runs/validation/`. Enable fusion in the standard
+config only when `acceptance.passed` is `true`.
+
 M4/M5 consumes the schema-v2 baseline and adds the deterministic forgotten and
 moved-object FSMs. The reference configuration is
 `configs/m45.example.json`:

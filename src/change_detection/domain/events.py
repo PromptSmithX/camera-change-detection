@@ -46,6 +46,7 @@ class EventRecord:
     after_bbox: BBox | None = None
     movement_outcome: MovementOutcome | None = None
     lifecycle: EventLifecycle = EventLifecycle.CREATED
+    evidence_sources: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         before = self.before_bbox.to_list() if self.before_bbox is not None else None
@@ -71,6 +72,7 @@ class EventRecord:
             "movement_outcome": (
                 self.movement_outcome.value if self.movement_outcome is not None else None
             ),
+            "evidence_sources": list(self.evidence_sources),
         }
 
 
@@ -88,4 +90,3 @@ class EventAction:
             "reason": self.reason,
             "event": self.event.to_dict(),
         }
-

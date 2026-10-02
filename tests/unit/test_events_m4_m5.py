@@ -130,6 +130,8 @@ def test_forgotten_stable_object_confirms_once_and_writes_public_record():
     assert event.object_id == "new-1"
     assert event.after_bbox == bbox
     assert event.confirmed_at_sec == 1.0
+    assert event.evidence_sources == ("yolo",)
+    assert event.to_dict()["evidence_sources"] == ["yolo"]
 
 
 def test_forgotten_short_lived_object_is_cancelled():

@@ -109,10 +109,19 @@ def test_m2_perception_config_round_trips_and_validates():
     assert config.perception.enabled is True
     assert config.perception.detector.classes == (0, 2)
     assert config.perception.tracker.lost_track_buffer == 15
+    assert config.perception.proposal_fusion.enabled is False
     assert validate_config(config.to_dict()).runtime.processing_fps == 5.0
 
     with pytest.raises(ConfigValidationError, match="processing_fps"):
         validate_config({"runtime": {"processing_fps": 0}})
+
+    fused = validate_config(
+        {"perception": {"proposal_fusion": {"enabled": True}}}
+    )
+    assert fused.perception.proposal_fusion.enabled is True
+    assert validate_config(fused.to_dict()).perception.proposal_fusion.enabled is True
+    with pytest.raises(ConfigValidationError, match="proposal_fusion.enabled"):
+        validate_config({"perception": {"proposal_fusion": {"enabled": 1}}})
 
 
 def test_masked_overlap_config_round_trips_and_rejects_invalid_values():

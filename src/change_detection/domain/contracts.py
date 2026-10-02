@@ -163,6 +163,10 @@ class Detection:
     reference_change_score: float | None = None
     event_candidate: bool = True
     change_bbox: BBox | None = None
+    evidence_sources: tuple[str, ...] = ()
+    semantic_score: float | None = None
+    change_score: float | None = None
+    alignment_score: float | None = None
 
     def __post_init__(self) -> None:
         if not isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
@@ -184,6 +188,21 @@ class Detection:
             raise ValueError("Detection event_candidate must be a boolean")
         if self.change_bbox is not None and self.change_bbox.area <= 0:
             raise ValueError("Detection change_bbox must have positive area")
+        sources = tuple(dict.fromkeys(str(item).strip() for item in self.evidence_sources))
+        if not sources:
+            sources = (str(self.proposal_source).strip(),)
+        if any(not item for item in sources):
+            raise ValueError("Detection evidence_sources must not contain empty values")
+        object.__setattr__(self, "evidence_sources", sources)
+        for name, value in (
+            ("semantic_score", self.semantic_score),
+            ("change_score", self.change_score),
+            ("alignment_score", self.alignment_score),
+        ):
+            if value is not None and (
+                not isfinite(float(value)) or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(f"Detection {name} must be between 0 and 1")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +214,10 @@ class Detection:
             "reference_change_score": self.reference_change_score,
             "event_candidate": self.event_candidate,
             "change_bbox": self.change_bbox.to_list() if self.change_bbox is not None else None,
+            "evidence_sources": list(self.evidence_sources),
+            "semantic_score": self.semantic_score,
+            "change_score": self.change_score,
+            "alignment_score": self.alignment_score,
         }
 
 
@@ -268,6 +291,10 @@ class Observation:
     reference_change_score: float | None = None
     event_candidate: bool = True
     change_bbox: BBox | None = None
+    evidence_sources: tuple[str, ...] = ()
+    semantic_score: float | None = None
+    change_score: float | None = None
+    alignment_score: float | None = None
 
     def __post_init__(self) -> None:
         if self.frame_index < 0:
@@ -295,6 +322,21 @@ class Observation:
             raise ValueError("Observation event_candidate must be a boolean")
         if self.change_bbox is not None and self.change_bbox.area <= 0:
             raise ValueError("Observation change_bbox must have positive area")
+        sources = tuple(dict.fromkeys(str(item).strip() for item in self.evidence_sources))
+        if not sources:
+            sources = (str(self.proposal_source).strip(),)
+        if any(not item for item in sources):
+            raise ValueError("Observation evidence_sources must not contain empty values")
+        self.evidence_sources = sources
+        for name, value in (
+            ("semantic_score", self.semantic_score),
+            ("change_score", self.change_score),
+            ("alignment_score", self.alignment_score),
+        ):
+            if value is not None and (
+                not isfinite(float(value)) or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(f"Observation {name} must be between 0 and 1")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -311,6 +353,10 @@ class Observation:
             "reference_change_score": self.reference_change_score,
             "event_candidate": self.event_candidate,
             "change_bbox": self.change_bbox.to_list() if self.change_bbox is not None else None,
+            "evidence_sources": list(self.evidence_sources),
+            "semantic_score": self.semantic_score,
+            "change_score": self.change_score,
+            "alignment_score": self.alignment_score,
         }
 
 

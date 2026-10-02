@@ -8,7 +8,7 @@ import numpy as np
 from change_detection.domain import BBox, Detection, FrameContext, SourceMetadata, Track
 from change_detection.infrastructure.models import YoloDetector
 from change_detection.infrastructure.tracking import ByteTrackAdapter
-from change_detection.perception import ObservationBuilder
+from change_detection.perception import ObservationBuilder, ProposalConsolidator
 from change_detection.pipeline import PerceptionRunner
 from change_detection.scene import BBoxROI
 from change_detection.sources import BaseFrameSource
@@ -173,3 +173,71 @@ def test_perception_runner_writes_jsonl_video_and_metadata(tmp_path: Path):
     metadata = json.loads(result.metadata_path.read_text())
     assert metadata["frames_processed"] == 2
     assert metadata["detector"]["name"] == "fake-detector"
+
+
+class _DuplicateProposalDetector:
+    metadata = {"name": "duplicate-proposals"}
+
+    def detect(self, frame, roi):
+        del frame, roi
+        bbox = BBox(12, 8, 22, 18)
+        return [
+            Detection(
+                bbox,
+                0.9,
+                26,
+                "handbag",
+                event_candidate=False,
+                evidence_sources=("yolo",),
+                semantic_score=0.9,
+            ),
+            Detection(
+                bbox,
+                0.8,
+                1000,
+                "scene_change",
+                proposal_source="baseline_residual",
+                reference_change_score=0.8,
+                change_bbox=bbox,
+                evidence_sources=("baseline_residual",),
+                change_score=0.8,
+                alignment_score=1.0,
+            ),
+        ]
+
+
+class _CapturingTracker:
+    metadata = {"name": "capturing-tracker"}
+
+    def __init__(self):
+        self.input_counts = []
+
+    def reset(self):
+        pass
+
+    def update(self, detections, frame):
+        del frame
+        self.input_counts.append(len(detections))
+        item = detections[0]
+        return [Track(1, item.bbox, item.confidence, item.class_id, item.class_name, 0)]
+
+
+def test_runner_consolidates_duplicate_sources_before_tracking(tmp_path: Path):
+    tracker = _CapturingTracker()
+    result = PerceptionRunner(
+        source=_FakeSource(),
+        roi=_roi(),
+        detector=_DuplicateProposalDetector(),
+        tracker=tracker,
+        proposal_consolidator=ProposalConsolidator(),
+        processing_fps=10.0,
+    ).run(tmp_path)
+
+    assert tracker.input_counts == [1, 1]
+    assert result.detection_count == 2
+    records = [json.loads(line) for line in result.observations_path.read_text().splitlines()]
+    assert records[0]["detections"][0]["proposal_source"] == "canonical"
+    assert records[0]["observations"][0]["evidence_sources"] == [
+        "yolo",
+        "baseline_residual",
+    ]

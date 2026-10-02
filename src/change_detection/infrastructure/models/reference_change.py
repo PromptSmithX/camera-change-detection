@@ -657,6 +657,14 @@ class ReferenceChangeDetector:
                     reference_change_score=region.score,
                     event_candidate=True,
                     change_bbox=current_bbox,
+                    evidence_sources=(region.proposal_source,),
+                    change_score=region.score,
+                    # A proposal is emitted only after alignment has passed
+                    # the configured response and translation gates.  Treat
+                    # that accepted evidence as fully valid; the raw phase
+                    # response is retained in scene_debug for diagnostics but
+                    # is not a calibrated probability.
+                    alignment_score=1.0,
                 )
             )
 
@@ -674,6 +682,7 @@ class HybridDetector:
         *,
         fusion_min_overlap_ratio: float = 0.25,
         fusion_min_iou: float = 0.10,
+        emit_standalone_reference_change: bool = True,
     ) -> None:
         if not 0.0 <= float(fusion_min_overlap_ratio) <= 1.0:
             raise ValueError("fusion_min_overlap_ratio must be between 0 and 1")
@@ -683,6 +692,7 @@ class HybridDetector:
         self.change_detector = change_detector
         self.fusion_min_overlap_ratio = float(fusion_min_overlap_ratio)
         self.fusion_min_iou = float(fusion_min_iou)
+        self.emit_standalone_reference_change = bool(emit_standalone_reference_change)
         self._last_timestamp_sec: float | None = None
 
     @property
@@ -693,6 +703,7 @@ class HybridDetector:
             "reference_change": self.change_detector.metadata,
             "fusion_min_overlap_ratio": self.fusion_min_overlap_ratio,
             "fusion_min_iou": self.fusion_min_iou,
+            "emit_standalone_reference_change": self.emit_standalone_reference_change,
         }
 
     @property
@@ -727,7 +738,18 @@ class HybridDetector:
     def detect_at(self, frame: Any, roi: Any, *, timestamp_sec: float) -> list[Detection]:
         from dataclasses import replace
 
-        yolo_detections = self.detector.detect(frame, roi)
+        yolo_detections = [
+            replace(
+                detection,
+                evidence_sources=("yolo",),
+                semantic_score=(
+                    detection.semantic_score
+                    if detection.semantic_score is not None
+                    else detection.confidence
+                ),
+            )
+            for detection in self.detector.detect(frame, roi)
+        ]
         changes = self.change_detector.detect(
             frame,
             yolo_detections,
@@ -780,10 +802,18 @@ class HybridDetector:
                         reference_change_score=change.reference_change_score,
                         event_candidate=True,
                         change_bbox=change.bbox,
+                        evidence_sources=("yolo", "reference_change"),
+                        semantic_score=detection.confidence,
+                        change_score=(
+                            change.change_score
+                            if change.change_score is not None
+                            else change.reference_change_score
+                        ),
+                        alignment_score=change.alignment_score,
                     )
                 )
             else:
-                if allow_unfused_change:
+                if allow_unfused_change and self.emit_standalone_reference_change:
                     output.append(change)
 
         for index, detection in enumerate(yolo_detections):
@@ -807,7 +837,14 @@ class HybridDetector:
                 else self.change_detector.masked_overlap_score(detection)
             )
             if score is None:
-                output.append(replace(detection, proposal_source="yolo", event_candidate=False))
+                output.append(
+                    replace(
+                        detection,
+                        proposal_source="yolo",
+                        event_candidate=False,
+                        evidence_sources=("yolo",),
+                    )
+                )
             else:
                 output.append(
                     replace(
@@ -815,6 +852,9 @@ class HybridDetector:
                         proposal_source="yolo_reference_change",
                         reference_change_score=score,
                         event_candidate=True,
+                        evidence_sources=("yolo", "masked_overlap"),
+                        change_score=score,
+                        alignment_score=1.0,
                     )
                 )
         self._last_timestamp_sec = timestamp_sec

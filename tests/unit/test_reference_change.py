@@ -229,6 +229,7 @@ def test_alignment_compensates_drift_and_maps_residual_back_to_current_frame() -
     assert detector.scene_anomaly_reason is None
     assert detector.scene_debug is not None and detector.scene_debug["valid"] is True
     assert residual.bbox.iou(expected) >= 0.75
+    assert residual.alignment_score == 1.0
 
 
 def test_alignable_camera_drift_without_scene_change_does_not_emit_candidate() -> None:

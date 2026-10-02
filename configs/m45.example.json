@@ -57,6 +57,9 @@
       "minimum_matching_threshold": 0.8,
       "minimum_consecutive_frames": 1
     },
+    "proposal_fusion": {
+      "enabled": false
+    },
     "encoder": {
       "enabled": true,
       "name": "dinov2",
