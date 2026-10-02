@@ -172,6 +172,22 @@ def aggregate_results(
     }
 
 
+def aggregate_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the non-diagnostic result allowed for blind test reporting."""
+
+    dataset = result.get("dataset", {})
+    return {
+        "dataset": {
+            "dataset_version": dataset.get("dataset_version"),
+            "split": dataset.get("split"),
+            "test_locked": dataset.get("test_locked"),
+            "sample_count": dataset.get("sample_count"),
+            "missing_prediction_count": dataset.get("missing_prediction_count"),
+        },
+        "overall": dict(result.get("overall", {})),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -200,6 +216,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-tolerance", type=float, default=3.0, help=argparse.SUPPRESS)
     parser.add_argument("--min-overlap", type=float, default=0.1, help=argparse.SUPPRESS)
     parser.add_argument("--require-object-id", action="store_true")
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Emit only aggregate dataset metadata and overall metrics.",
+    )
     parser.add_argument(
         "--ignore-predictions-for",
         action="append",
@@ -288,6 +309,8 @@ def main() -> int:
         "latency_deadlines_seconds": list(evaluation_config.latency_deadlines_seconds),
     }
     result["dataset"]["ignored_prediction_ids"] = sorted(ignored_prediction_ids)
+    if args.summary_only or args.split == "test":
+        result = aggregate_summary(result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.output:
         output = args.output if args.output.is_absolute() else root / args.output

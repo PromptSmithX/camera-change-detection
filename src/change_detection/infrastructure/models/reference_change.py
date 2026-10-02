@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from math import hypot
 from typing import Any, Iterable
 
-from change_detection.config import MaskedOverlapConfig, SmallComponentConfig
+from change_detection.config import (
+    AlignmentConfig,
+    BaselineResidualConfig,
+    MaskedOverlapConfig,
+    SmallComponentConfig,
+)
 from change_detection.domain import BBox, Detection, SCENE_CHANGE_CLASS_ID
 
 
@@ -18,6 +23,30 @@ class _PersistentRegion:
     last_seen_sec: float
     score: float
     small_component: bool = False
+    proposal_source: str = "reference_change"
+
+
+@dataclass(frozen=True, slots=True)
+class _AlignmentResult:
+    shift_x: float
+    shift_y: float
+    response: float
+    valid: bool
+    reason: str | None = None
+
+    @property
+    def magnitude(self) -> float:
+        return hypot(self.shift_x, self.shift_y)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "shift_x": self.shift_x,
+            "shift_y": self.shift_y,
+            "magnitude": self.magnitude,
+            "response": self.response,
+            "valid": self.valid,
+            "reason": self.reason,
+        }
 
 
 @dataclass(slots=True)
@@ -25,15 +54,16 @@ class _FrameChangeEvidence:
     changed_before_baseline_mask: Any
     baseline_mask: Any
     person_mask: Any
+    alignment: _AlignmentResult
 
 
 class ReferenceChangeDetector:
     """Propose persistent regions that differ from a calibrated reference.
 
     The detector is deliberately conservative: people and known baseline
-    objects are masked before change components are extracted, camera shifts
-    above three pixels are rejected, and a component must persist before it is
-    exposed as an event candidate.
+    objects are masked before free-space change components are extracted,
+    alignable camera translation is compensated, and a component must persist
+    before it is exposed as an event candidate.
     """
 
     def __init__(
@@ -51,9 +81,10 @@ class ReferenceChangeDetector:
         stationary_tolerance_px: float = 6.0,
         edge_extra_seconds: float = 2.0,
         max_gap_seconds: float = 0.6,
-        max_camera_shift_px: float = 3.0,
         small_component: SmallComponentConfig | None = None,
         masked_overlap: MaskedOverlapConfig | None = None,
+        alignment: AlignmentConfig | None = None,
+        baseline_residual: BaselineResidualConfig | None = None,
     ) -> None:
         try:
             import cv2
@@ -82,9 +113,6 @@ class ReferenceChangeDetector:
             float(max_gap_seconds),
         ) < 0:
             raise ValueError("change timing settings must be non-negative")
-        if float(max_camera_shift_px) < 0:
-            raise ValueError("max_camera_shift_px must be non-negative")
-
         self._cv2 = cv2
         self._np = np
         self.roi = roi
@@ -100,13 +128,15 @@ class ReferenceChangeDetector:
         self.stationary_tolerance_px = float(stationary_tolerance_px)
         self.edge_extra_seconds = float(edge_extra_seconds)
         self.max_gap_seconds = float(max_gap_seconds)
-        self.max_camera_shift_px = float(max_camera_shift_px)
         self.small_component = small_component or SmallComponentConfig()
         self.masked_overlap = masked_overlap or MaskedOverlapConfig()
+        self.alignment = alignment or AlignmentConfig()
+        self.baseline_residual = baseline_residual or BaselineResidualConfig()
         self._regions: list[_PersistentRegion] = []
         self._last_timestamp_sec: float | None = None
         self._scene_anomaly_reason: str | None = None
         self._frame_evidence: _FrameChangeEvidence | None = None
+        self._alignment_result: _AlignmentResult | None = None
 
     @staticmethod
     def _gray(image: Any) -> Any:
@@ -124,10 +154,15 @@ class ReferenceChangeDetector:
         self._last_timestamp_sec = None
         self._scene_anomaly_reason = None
         self._frame_evidence = None
+        self._alignment_result = None
 
     @property
     def scene_anomaly_reason(self) -> str | None:
         return self._scene_anomaly_reason
+
+    @property
+    def scene_debug(self) -> dict[str, Any] | None:
+        return self._alignment_result.to_dict() if self._alignment_result is not None else None
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -142,7 +177,13 @@ class ReferenceChangeDetector:
             "stationary_tolerance_px": self.stationary_tolerance_px,
             "edge_extra_seconds": self.edge_extra_seconds,
             "max_gap_seconds": self.max_gap_seconds,
-            "max_camera_shift_px": self.max_camera_shift_px,
+            "alignment": {
+                "min_response": self.alignment.min_response,
+                "max_translation_ratio": self.alignment.max_translation_ratio,
+                "max_unfused_translation_ratio": (
+                    self.alignment.max_unfused_translation_ratio
+                ),
+            },
             "masked_baseline_box_count": len(self.baseline_boxes),
             "small_component": {
                 "enabled": self.small_component.enabled,
@@ -158,6 +199,17 @@ class ReferenceChangeDetector:
                 "min_changed_fraction": self.masked_overlap.min_changed_fraction,
                 "max_person_overlap_ratio": self.masked_overlap.max_person_overlap_ratio,
             },
+            "baseline_residual": {
+                "enabled": self.baseline_residual.enabled,
+                "min_component_ratio": self.baseline_residual.min_component_ratio,
+                "min_component_area_px": self.baseline_residual.min_component_area_px,
+                "stable_seconds": self.baseline_residual.stable_seconds,
+                "min_fill_ratio": self.baseline_residual.min_fill_ratio,
+                "max_person_overlap_ratio": self.baseline_residual.max_person_overlap_ratio,
+                "max_baseline_coverage_ratio": (
+                    self.baseline_residual.max_baseline_coverage_ratio
+                ),
+            },
         }
 
     def _min_component_area(self) -> int:
@@ -172,6 +224,32 @@ class ReferenceChangeDetector:
             round(self.roi.bbox.area * self.small_component.min_component_ratio),
         )
 
+    def _baseline_residual_min_area(self) -> int:
+        return max(
+            self.baseline_residual.min_component_area_px,
+            round(self.roi.bbox.area * self.baseline_residual.min_component_ratio),
+        )
+
+    def _translate_bbox(self, box: BBox, dx: float, dy: float) -> BBox | None:
+        roi = self.roi.bbox
+        translated = BBox(
+            max(roi.x1, round(box.x1 + dx)),
+            max(roi.y1, round(box.y1 + dy)),
+            min(roi.x2, round(box.x2 + dx)),
+            min(roi.y2, round(box.y2 + dy)),
+        )
+        return translated if translated.area > 0 else None
+
+    def _current_to_reference_bbox(
+        self, box: BBox, alignment: _AlignmentResult
+    ) -> BBox | None:
+        return self._translate_bbox(box, -alignment.shift_x, -alignment.shift_y)
+
+    def _reference_to_current_bbox(
+        self, box: BBox, alignment: _AlignmentResult
+    ) -> BBox | None:
+        return self._translate_bbox(box, alignment.shift_x, alignment.shift_y)
+
     def masked_overlap_score(self, detection: Detection) -> float | None:
         """Score a YOLO box using changed pixels hidden by baseline masking.
 
@@ -184,7 +262,9 @@ class ReferenceChangeDetector:
         if not config.enabled or evidence is None:
             return None
         roi_box = self.roi.bbox
-        box = detection.bbox
+        box = self._current_to_reference_bbox(detection.bbox, evidence.alignment)
+        if box is None:
+            return None
         x1 = max(roi_box.x1, box.x1) - roi_box.x1
         y1 = max(roi_box.y1, box.y1) - roi_box.y1
         x2 = min(roi_box.x2, box.x2) - roi_box.x1
@@ -211,14 +291,21 @@ class ReferenceChangeDetector:
             return None
         return score
 
-    def _person_mask(self, detections: Iterable[Detection], shape: tuple[int, int]) -> Any:
+    def _person_mask(
+        self,
+        detections: Iterable[Detection],
+        shape: tuple[int, int],
+        alignment: _AlignmentResult,
+    ) -> Any:
         height, width = shape
         mask = self._np.zeros((height, width), dtype=self._np.uint8)
         roi_box = self.roi.bbox
         for detection in detections:
             if detection.class_id != 0 and detection.class_name.casefold() != "person":
                 continue
-            box = detection.bbox
+            box = self._current_to_reference_bbox(detection.bbox, alignment)
+            if box is None:
+                continue
             pad_x = max(1, round(box.width * 0.15))
             pad_y = max(1, round(box.height * 0.15))
             x1 = max(roi_box.x1, box.x1 - pad_x) - roi_box.x1
@@ -244,44 +331,86 @@ class ReferenceChangeDetector:
                 self._cv2.rectangle(mask, (x1, y1), (x2 - 1, y2 - 1), 255, thickness=-1)
         return mask
 
-    def _aligned_gray(self, frame: Any) -> Any | None:
+    def _baseline_coverage(self, box: BBox) -> tuple[float, int]:
+        coverage = 0.0
+        substantial_overlaps = 0
+        for baseline in self.baseline_boxes:
+            x1 = max(box.x1, baseline.x1)
+            y1 = max(box.y1, baseline.y1)
+            x2 = min(box.x2, baseline.x2)
+            y2 = min(box.y2, baseline.y2)
+            intersection = max(0, x2 - x1) * max(0, y2 - y1)
+            coverage = max(coverage, intersection / max(1, baseline.area))
+            if intersection / max(1, box.area) >= 0.10:
+                substantial_overlaps += 1
+        return coverage, substantial_overlaps
+
+    def _aligned_gray(self, frame: Any) -> tuple[Any, _AlignmentResult] | None:
         current = self._gray(self.roi.crop(frame))
         if current.shape != self._reference_gray.shape:
+            self._alignment_result = _AlignmentResult(
+                0.0, 0.0, 0.0, False, "shape_mismatch"
+            )
             return None
         current_float = self._np.asarray(current, dtype=self._np.float32)
         reference_float = self._np.asarray(self._reference_gray, dtype=self._np.float32)
         (shift_x, shift_y), response = self._cv2.phaseCorrelate(reference_float, current_float)
-        if (
-            not self._np.isfinite(shift_x)
-            or not self._np.isfinite(shift_y)
-            or response < 0.02
-            or hypot(float(shift_x), float(shift_y)) > self.max_camera_shift_px
-        ):
+        if not self._np.isfinite(shift_x) or not self._np.isfinite(shift_y):
+            self._alignment_result = _AlignmentResult(
+                0.0, 0.0, float(response), False, "non_finite_translation"
+            )
+            return None
+        shift_x = float(shift_x)
+        shift_y = float(shift_y)
+        response = float(response)
+        maximum_shift = max(
+            1.0,
+            hypot(float(self.roi.bbox.width), float(self.roi.bbox.height))
+            * self.alignment.max_translation_ratio,
+        )
+        reason = None
+        if response < self.alignment.min_response:
+            reason = "low_alignment_response"
+        elif hypot(shift_x, shift_y) > maximum_shift:
+            reason = "translation_out_of_range"
+        alignment = _AlignmentResult(
+            shift_x,
+            shift_y,
+            response,
+            reason is None,
+            reason,
+        )
+        self._alignment_result = alignment
+        if not alignment.valid:
             return None
         transform = self._np.asarray(
-            [[1.0, 0.0, -float(shift_x)], [0.0, 1.0, -float(shift_y)]],
+            [[1.0, 0.0, -shift_x], [0.0, 1.0, -shift_y]],
             dtype=self._np.float32,
         )
-        return self._cv2.warpAffine(
-            current,
-            transform,
-            (current.shape[1], current.shape[0]),
-            flags=self._cv2.INTER_LINEAR,
-            borderMode=self._cv2.BORDER_REPLICATE,
+        return (
+            self._cv2.warpAffine(
+                current,
+                transform,
+                (current.shape[1], current.shape[0]),
+                flags=self._cv2.INTER_LINEAR,
+                borderMode=self._cv2.BORDER_REPLICATE,
+            ),
+            alignment,
         )
 
     def _components(
         self,
         frame: Any,
         detections: list[Detection],
-    ) -> list[tuple[BBox, float, bool]] | None:
+    ) -> list[tuple[BBox, float, bool, str]] | None:
         cv2, np = self._cv2, self._np
         self._scene_anomaly_reason = None
         self._frame_evidence = None
-        current = self._aligned_gray(frame)
-        if current is None:
+        aligned = self._aligned_gray(frame)
+        if aligned is None:
             self._scene_anomaly_reason = "camera_shift_or_unreliable_alignment"
             return None
+        current, alignment = aligned
         blurred_reference = cv2.GaussianBlur(self._reference_gray, (5, 5), 0)
         blurred_current = cv2.GaussianBlur(current, (5, 5), 0)
         difference = cv2.absdiff(blurred_reference, blurred_current)
@@ -297,7 +426,7 @@ class ReferenceChangeDetector:
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
         )
 
-        person_mask = self._person_mask(detections, changed.shape)
+        person_mask = self._person_mask(detections, changed.shape, alignment)
         baseline_mask = self._baseline_mask(changed.shape)
         valid = cv2.bitwise_not(cv2.bitwise_or(person_mask, baseline_mask))
         changed_after_mask = cv2.bitwise_and(changed, valid)
@@ -307,7 +436,9 @@ class ReferenceChangeDetector:
         if cv2.countNonZero(changed_after_mask) / valid_pixels > self.global_change_ratio:
             self._scene_anomaly_reason = "global_scene_change"
             return None
-        self._frame_evidence = _FrameChangeEvidence(changed, baseline_mask, person_mask)
+        self._frame_evidence = _FrameChangeEvidence(
+            changed, baseline_mask, person_mask, alignment
+        )
 
         contour_result = cv2.findContours(changed_after_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = contour_result[-2]
@@ -320,7 +451,7 @@ class ReferenceChangeDetector:
             else min_area
         )
         max_area = round(roi_area * self.max_component_ratio)
-        result: list[tuple[BBox, float, bool]] = []
+        result: list[tuple[BBox, float, bool, str]] = []
         for contour in contours:
             x, y, width, height = cv2.boundingRect(contour)
             area = int(cv2.contourArea(contour))
@@ -342,7 +473,65 @@ class ReferenceChangeDetector:
                 roi_box.x1 + int(x + width),
                 roi_box.y1 + int(y + height),
             )
-            result.append((component, max(0.0, min(1.0, score)), is_small))
+            result.append(
+                (
+                    component,
+                    max(0.0, min(1.0, score)),
+                    is_small,
+                    "reference_change",
+                )
+            )
+
+        if self.baseline_residual.enabled:
+            visible_baseline = cv2.bitwise_and(baseline_mask, cv2.bitwise_not(person_mask))
+            residual_mask = cv2.bitwise_and(changed, visible_baseline)
+            residual_contours = cv2.findContours(
+                residual_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )[-2]
+            residual_min_area = self._baseline_residual_min_area()
+            for contour in residual_contours:
+                x, y, width, height = cv2.boundingRect(contour)
+                area = int(cv2.contourArea(contour))
+                if (
+                    area < residual_min_area
+                    or area > max_area
+                    or width < 8
+                    or height < 8
+                ):
+                    continue
+                box_area = max(1, width * height)
+                score = float(
+                    cv2.countNonZero(residual_mask[y : y + height, x : x + width])
+                ) / box_area
+                person_overlap = float(
+                    cv2.countNonZero(person_mask[y : y + height, x : x + width])
+                ) / box_area
+                if (
+                    score < self.baseline_residual.min_fill_ratio
+                    or person_overlap > self.baseline_residual.max_person_overlap_ratio
+                ):
+                    continue
+                component = BBox(
+                    roi_box.x1 + int(x),
+                    roi_box.y1 + int(y),
+                    roi_box.x1 + int(x + width),
+                    roi_box.y1 + int(y + height),
+                )
+                baseline_coverage, overlap_count = self._baseline_coverage(component)
+                if (
+                    baseline_coverage
+                    >= self.baseline_residual.max_baseline_coverage_ratio
+                    and overlap_count == 1
+                ):
+                    continue
+                result.append(
+                    (
+                        component,
+                        max(0.0, min(1.0, score)),
+                        False,
+                        "baseline_residual",
+                    )
+                )
         return result
 
     def _is_edge_component(self, box: BBox) -> bool:
@@ -386,10 +575,17 @@ class ReferenceChangeDetector:
         used_regions: set[int] = set()
         proposals: list[Detection] = []
         roi_diagonal = max(1.0, hypot(self.roi.bbox.width, self.roi.bbox.height))
-        for box, score, is_small in components:
+        alignment = self._alignment_result
+        if alignment is None or not alignment.valid:
+            self._regions.clear()
+            self._last_timestamp_sec = timestamp_sec
+            return []
+        for box, score, is_small, proposal_source in components:
             candidates: list[tuple[float, float, int]] = []
             for index, region in enumerate(self._regions):
                 if index in used_regions:
+                    continue
+                if region.proposal_source != proposal_source:
                     continue
                 distance = self._matching_distance(box, region.bbox)
                 allowed_distance = max(8.0, min(24.0, 0.20 * roi_diagonal))
@@ -429,29 +625,46 @@ class ReferenceChangeDetector:
                     timestamp_sec,
                     score,
                     small_component=is_small,
+                    proposal_source=proposal_source,
                 )
                 self._regions.append(region)
                 used_regions.add(len(self._regions) - 1)
 
-            required_seconds = (
-                self.small_component.stable_seconds
-                if region.small_component
-                else self.stable_seconds
-            ) + (
-                self.edge_extra_seconds if self._is_edge_component(region.bbox) else 0.0
-            )
+            if region.proposal_source == "baseline_residual":
+                required_seconds = self.baseline_residual.stable_seconds
+            else:
+                required_seconds = (
+                    self.small_component.stable_seconds
+                    if region.small_component
+                    else self.stable_seconds
+                ) + (
+                    self.edge_extra_seconds
+                    if self._is_edge_component(region.bbox)
+                    else 0.0
+                )
             if timestamp_sec - region.first_seen_sec + 1e-9 < required_seconds:
+                continue
+            current_bbox = self._reference_to_current_bbox(region.bbox, alignment)
+            if current_bbox is None:
                 continue
             proposals.append(
                 Detection(
-                    bbox=region.bbox,
+                    bbox=current_bbox,
                     confidence=max(0.35, min(0.99, region.score)),
                     class_id=SCENE_CHANGE_CLASS_ID,
                     class_name="scene_change",
-                    proposal_source="reference_change",
+                    proposal_source=region.proposal_source,
                     reference_change_score=region.score,
                     event_candidate=True,
-                    change_bbox=region.bbox,
+                    change_bbox=current_bbox,
+                    evidence_sources=(region.proposal_source,),
+                    change_score=region.score,
+                    # A proposal is emitted only after alignment has passed
+                    # the configured response and translation gates.  Treat
+                    # that accepted evidence as fully valid; the raw phase
+                    # response is retained in scene_debug for diagnostics but
+                    # is not a calibrated probability.
+                    alignment_score=1.0,
                 )
             )
 
@@ -469,6 +682,7 @@ class HybridDetector:
         *,
         fusion_min_overlap_ratio: float = 0.25,
         fusion_min_iou: float = 0.10,
+        emit_standalone_reference_change: bool = True,
     ) -> None:
         if not 0.0 <= float(fusion_min_overlap_ratio) <= 1.0:
             raise ValueError("fusion_min_overlap_ratio must be between 0 and 1")
@@ -478,6 +692,7 @@ class HybridDetector:
         self.change_detector = change_detector
         self.fusion_min_overlap_ratio = float(fusion_min_overlap_ratio)
         self.fusion_min_iou = float(fusion_min_iou)
+        self.emit_standalone_reference_change = bool(emit_standalone_reference_change)
         self._last_timestamp_sec: float | None = None
 
     @property
@@ -488,11 +703,16 @@ class HybridDetector:
             "reference_change": self.change_detector.metadata,
             "fusion_min_overlap_ratio": self.fusion_min_overlap_ratio,
             "fusion_min_iou": self.fusion_min_iou,
+            "emit_standalone_reference_change": self.emit_standalone_reference_change,
         }
 
     @property
     def scene_anomaly_reason(self) -> str | None:
         return self.change_detector.scene_anomaly_reason
+
+    @property
+    def scene_debug(self) -> dict[str, Any] | None:
+        return self.change_detector.scene_debug
 
     def reset(self) -> None:
         self.change_detector.reset()
@@ -518,7 +738,18 @@ class HybridDetector:
     def detect_at(self, frame: Any, roi: Any, *, timestamp_sec: float) -> list[Detection]:
         from dataclasses import replace
 
-        yolo_detections = self.detector.detect(frame, roi)
+        yolo_detections = [
+            replace(
+                detection,
+                evidence_sources=("yolo",),
+                semantic_score=(
+                    detection.semantic_score
+                    if detection.semantic_score is not None
+                    else detection.confidence
+                ),
+            )
+            for detection in self.detector.detect(frame, roi)
+        ]
         changes = self.change_detector.detect(
             frame,
             yolo_detections,
@@ -526,7 +757,21 @@ class HybridDetector:
         )
         consumed: set[int] = set()
         output: list[Detection] = []
+        alignment_debug = getattr(self.change_detector, "scene_debug", None) or {}
+        alignment_config = getattr(self.change_detector, "alignment", None)
+        maximum_unfused_shift = (
+            hypot(float(roi.bbox.width), float(roi.bbox.height))
+            * float(alignment_config.max_unfused_translation_ratio)
+            if alignment_config is not None
+            else float("inf")
+        )
+        allow_unfused_change = (
+            float(alignment_debug.get("magnitude", 0.0)) <= maximum_unfused_shift
+        )
         for change in changes:
+            if change.proposal_source == "baseline_residual":
+                output.append(change)
+                continue
             matches = [
                 (
                     change.bbox.iou(detection.bbox),
@@ -557,17 +802,34 @@ class HybridDetector:
                         reference_change_score=change.reference_change_score,
                         event_candidate=True,
                         change_bbox=change.bbox,
+                        evidence_sources=("yolo", "reference_change"),
+                        semantic_score=detection.confidence,
+                        change_score=(
+                            change.change_score
+                            if change.change_score is not None
+                            else change.reference_change_score
+                        ),
+                        alignment_score=change.alignment_score,
                     )
                 )
             else:
-                output.append(change)
+                if allow_unfused_change and self.emit_standalone_reference_change:
+                    output.append(change)
 
         for index, detection in enumerate(yolo_detections):
             if index in consumed:
                 continue
+            baseline_residual_enabled = bool(
+                getattr(
+                    getattr(self.change_detector, "baseline_residual", None),
+                    "enabled",
+                    False,
+                )
+            )
             score = (
                 None
                 if self._person(detection)
+                or baseline_residual_enabled
                 or any(
                     self._fusion_match(change.bbox, detection.bbox)
                     for change in changes
@@ -575,7 +837,14 @@ class HybridDetector:
                 else self.change_detector.masked_overlap_score(detection)
             )
             if score is None:
-                output.append(replace(detection, proposal_source="yolo", event_candidate=False))
+                output.append(
+                    replace(
+                        detection,
+                        proposal_source="yolo",
+                        event_candidate=False,
+                        evidence_sources=("yolo",),
+                    )
+                )
             else:
                 output.append(
                     replace(
@@ -583,6 +852,9 @@ class HybridDetector:
                         proposal_source="yolo_reference_change",
                         reference_change_score=score,
                         event_candidate=True,
+                        evidence_sources=("yolo", "masked_overlap"),
+                        change_score=score,
+                        alignment_score=1.0,
                     )
                 )
         self._last_timestamp_sec = timestamp_sec

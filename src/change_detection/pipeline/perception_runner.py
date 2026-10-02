@@ -102,6 +102,7 @@ class PerceptionRunner:
         roi: Any,
         detector: Detector,
         tracker: Tracker,
+        proposal_consolidator: Any | None = None,
         observation_builder: ObservationBuilder | None = None,
         processing_fps: float = 5.0,
         warmup_seconds: float = 0.0,
@@ -121,6 +122,7 @@ class PerceptionRunner:
         self.roi = roi
         self.detector = detector
         self.tracker = tracker
+        self.proposal_consolidator = proposal_consolidator
         self.observation_builder = observation_builder or ObservationBuilder()
         self.processing_fps = float(processing_fps)
         self.warmup_seconds = float(warmup_seconds)
@@ -166,6 +168,9 @@ class PerceptionRunner:
         detector_reset = getattr(self.detector, "reset", None)
         if callable(detector_reset):
             detector_reset()
+        consolidator_reset = getattr(self.proposal_consolidator, "reset", None)
+        if callable(consolidator_reset):
+            consolidator_reset()
         if self.embedding_refresher is not None:
             self.embedding_refresher.reset()
         if self.object_memory is not None:
@@ -228,6 +233,8 @@ class PerceptionRunner:
                         )
                     else:
                         detections = self.detector.detect(frame.image, self.roi)
+                    if self.proposal_consolidator is not None:
+                        detections = self.proposal_consolidator.consolidate(detections)
                     anomaly_reason = getattr(self.detector, "scene_anomaly_reason", None)
                     if scene_status is not None and anomaly_reason:
                         scene_status = replace(
@@ -272,6 +279,16 @@ class PerceptionRunner:
                                     **(
                                         {"scene_status": scene_status.to_dict()}
                                         if scene_status is not None
+                                        else {}
+                                    ),
+                                    **(
+                                        {"scene_alignment": scene_debug}
+                                        if (
+                                            scene_debug := getattr(
+                                                self.detector, "scene_debug", None
+                                            )
+                                        )
+                                        is not None
                                         else {}
                                     ),
                                     "assignments": [
@@ -364,6 +381,11 @@ class PerceptionRunner:
             "track_count": track_count,
             "observation_count": observation_count,
             "detector": getattr(self.detector, "metadata", {}),
+            "proposal_fusion": (
+                getattr(self.proposal_consolidator, "metadata", {})
+                if self.proposal_consolidator is not None
+                else {"enabled": False}
+            ),
             "tracker": getattr(self.tracker, "metadata", {}),
             "artifacts": {
                 "observations": observations_path.name,

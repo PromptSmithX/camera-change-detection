@@ -3,6 +3,7 @@
 from .contracts import Detector, FeatureEncoder, PerceptionDependencyError, Tracker
 from .encoder import EmbeddingRefresher, EncoderRefreshResult
 from .observation import ObservationBuildError, ObservationBuilder
+from .proposal import ProposalConsolidator
 
 __all__ = [
     "Detector",
@@ -12,5 +13,6 @@ __all__ = [
     "ObservationBuildError",
     "ObservationBuilder",
     "PerceptionDependencyError",
+    "ProposalConsolidator",
     "Tracker",
 ]

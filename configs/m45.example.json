@@ -57,6 +57,9 @@
       "minimum_matching_threshold": 0.8,
       "minimum_consecutive_frames": 1
     },
+    "proposal_fusion": {
+      "enabled": false
+    },
     "encoder": {
       "enabled": true,
       "name": "dinov2",
@@ -74,6 +77,20 @@
       "stable_seconds": 1.0,
       "fusion_min_overlap_ratio": 0.25,
       "fusion_min_iou": 0.1,
+      "alignment": {
+        "min_response": 0.02,
+        "max_translation_ratio": 0.03,
+        "max_unfused_translation_ratio": 0.003
+      },
+      "baseline_residual": {
+        "enabled": true,
+        "min_component_ratio": 0.00075,
+        "min_component_area_px": 48,
+        "stable_seconds": 2.0,
+        "min_fill_ratio": 0.35,
+        "max_person_overlap_ratio": 0.1,
+        "max_baseline_coverage_ratio": 0.5
+      },
       "small_component": {
         "enabled": true,
         "min_component_ratio": 0.00075,

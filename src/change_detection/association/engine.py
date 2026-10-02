@@ -40,12 +40,13 @@ class AssociationEngine:
         dy = observation.centroid.y - (memory.last_bbox.y1 + memory.last_bbox.y2) / 2.0
         spatial = max(0.0, 1.0 - sqrt(dx * dx + dy * dy) / diagonal)
         size = min(memory.last_bbox.area, observation.bbox.area) / max(memory.last_bbox.area, observation.bbox.area)
+        evidence_sources = set(observation.evidence_sources) | {observation.proposal_source}
         class_compatibility = (
             1.0
             if memory.detector_class_id == observation.detector_class_id
             or memory.detector_class_id == SCENE_CHANGE_CLASS_ID
             or observation.detector_class_id == SCENE_CHANGE_CLASS_ID
-            or observation.proposal_source == "fused"
+            or bool({"reference_change", "baseline_residual", "fused"}.intersection(evidence_sources))
             else 0.0
         )
         total = (
@@ -66,9 +67,14 @@ class AssociationEngine:
         # protects against stale matches again.
         baseline_seed = memory.is_baseline and not memory.observation_history
         age = timestamp_sec - memory.last_seen_sec
+        evidence_sources = set(observation.evidence_sources) | {observation.proposal_source}
         contour_candidate = (
             observation.event_candidate
-            and observation.proposal_source in {"reference_change", "fused"}
+            and bool(
+                {"reference_change", "baseline_residual", "fused"}.intersection(
+                    evidence_sources
+                )
+            )
         )
         baseline_reidentified = False
         baseline_candidate_reidentified = False

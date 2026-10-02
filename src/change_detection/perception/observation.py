@@ -74,6 +74,20 @@ class ObservationBuilder:
                     change_bbox=(
                         detection.change_bbox if detection is not None else None
                     ),
+                    evidence_sources=(
+                        detection.evidence_sources
+                        if detection is not None
+                        else ("tracker_prediction",)
+                    ),
+                    semantic_score=(
+                        detection.semantic_score if detection is not None else None
+                    ),
+                    change_score=(
+                        detection.change_score if detection is not None else None
+                    ),
+                    alignment_score=(
+                        detection.alignment_score if detection is not None else None
+                    ),
                 )
             )
         return observations

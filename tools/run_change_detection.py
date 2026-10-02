@@ -27,7 +27,11 @@ from change_detection.infrastructure.models import (
 )
 from change_detection.infrastructure.tracking import ByteTrackAdapter
 from change_detection.memory import ObjectMemory
-from change_detection.perception import EmbeddingRefresher, PerceptionDependencyError
+from change_detection.perception import (
+    EmbeddingRefresher,
+    PerceptionDependencyError,
+    ProposalConsolidator,
+)
 from change_detection.pipeline import (
     PerceptionRunError,
     PerceptionRunner,
@@ -159,11 +163,18 @@ def main() -> int:
                 stable_seconds=config.perception.reference_change.stable_seconds,
                 small_component=config.perception.reference_change.small_component,
                 masked_overlap=config.perception.reference_change.masked_overlap,
+                alignment=config.perception.reference_change.alignment,
+                baseline_residual=(
+                    config.perception.reference_change.baseline_residual
+                ),
             ),
             fusion_min_overlap_ratio=(
                 config.perception.reference_change.fusion_min_overlap_ratio
             ),
             fusion_min_iou=config.perception.reference_change.fusion_min_iou,
+            emit_standalone_reference_change=(
+                config.perception.reference_change.emit_standalone
+            ),
         )
         event_store = EventStore()
         event_engine = EventEngine(forgotten=config.forgotten, moved=config.moved)
@@ -174,6 +185,11 @@ def main() -> int:
                 roi=roi,
                 detector=detector,
                 tracker=tracker,
+                proposal_consolidator=(
+                    ProposalConsolidator()
+                    if config.perception.proposal_fusion.enabled
+                    else None
+                ),
                 processing_fps=config.runtime.processing_fps,
                 warmup_seconds=config.runtime.warmup_seconds,
                 embedding_refresher=EmbeddingRefresher(

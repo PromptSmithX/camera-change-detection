@@ -8,7 +8,7 @@ import numpy as np
 
 from change_detection.association import AssociationEngine
 from change_detection.config import AssociationConfig, MemoryConfig
-from change_detection.domain import BaselineObject, BBox, Detection, FrameContext, Observation, Point, SourceMetadata, Track
+from change_detection.domain import BaselineObject, BBox, Detection, FrameContext, Observation, Point, SCENE_CHANGE_CLASS_ID, SourceMetadata, Track
 from change_detection.infrastructure.models import DinoV2Encoder
 from change_detection.memory import ObjectMemory
 from change_detection.perception import EmbeddingRefresher
@@ -131,6 +131,46 @@ def test_fused_candidate_keeps_class_metadata_without_fragmenting_identity():
 
     assert associations.matches[0].object_id == "baseline-1"
     assert associations.matches[0].score.class_compatibility == 1.0
+
+
+def test_baseline_residual_matching_baseline_appearance_preserves_identity():
+    memory = _memory()
+    candidate = replace(
+        _observation(1, (1.0, 0.0), timestamp=0.0),
+        detector_class="scene_change",
+        detector_class_id=SCENE_CHANGE_CLASS_ID,
+        event_candidate=True,
+        proposal_source="baseline_residual",
+    )
+    associations = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [candidate],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=0.0,
+    )
+
+    assert len(associations.matches) == 1
+    assert associations.matches[0].object_id == "baseline-1"
+
+
+def test_baseline_residual_with_different_appearance_is_a_new_object():
+    memory = _memory()
+    candidate = replace(
+        _observation(1, (0.0, 1.0), timestamp=0.0),
+        detector_class="scene_change",
+        detector_class_id=SCENE_CHANGE_CLASS_ID,
+        event_candidate=True,
+        proposal_source="baseline_residual",
+    )
+    associations = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [candidate],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=0.0,
+    )
+
+    assert associations.matches == ()
+    assert associations.candidates[0].reason == "appearance_below_threshold"
 
 
 class _FakeDino:
