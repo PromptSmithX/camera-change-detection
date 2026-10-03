@@ -43,6 +43,7 @@ def _hybrid(
     detections: list[Detection],
     *,
     masked_overlap: MaskedOverlapConfig | None = None,
+    baseline_residual: BaselineResidualConfig | None = None,
 ) -> HybridDetector:
     return HybridDetector(
         _Detector(detections),
@@ -51,6 +52,11 @@ def _hybrid(
             ROI,
             baseline_boxes=[BASELINE_BOX],
             masked_overlap=masked_overlap,
+            baseline_residual=(
+                baseline_residual
+                if baseline_residual is not None
+                else BaselineResidualConfig(enabled=False)
+            ),
         ),
     )
 
@@ -247,6 +253,193 @@ def test_fusion_thresholds_are_validated() -> None:
         HybridDetector(_Detector([]), change_detector, fusion_min_overlap_ratio=1.1)
     with pytest.raises(ValueError, match="fusion_min_iou"):
         HybridDetector(_Detector([]), change_detector, fusion_min_iou=-0.1)
+
+
+def test_alignment_compensates_drift_and_maps_residual_back_to_current_frame() -> None:
+    import cv2
+
+    reference, changed = _frames()
+    shift_x, shift_y = 12, 7
+    shifted = cv2.warpAffine(
+        changed,
+        np.asarray([[1.0, 0.0, shift_x], [0.0, 1.0, shift_y]], dtype=np.float32),
+        (changed.shape[1], changed.shape[0]),
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        alignment=AlignmentConfig(max_translation_ratio=0.20),
+        baseline_residual=BaselineResidualConfig(
+            enabled=True,
+            min_component_ratio=0.001,
+            min_component_area_px=16,
+            stable_seconds=0.0,
+            min_fill_ratio=0.5,
+        ),
+    )
+
+    output = detector.detect(shifted, [], timestamp_sec=0.0)
+
+    residual = next(item for item in output if item.proposal_source == "baseline_residual")
+    expected = BBox(
+        NEW_BOX.x1 + shift_x,
+        NEW_BOX.y1 + shift_y,
+        NEW_BOX.x2 + shift_x,
+        NEW_BOX.y2 + shift_y,
+    )
+    assert detector.scene_anomaly_reason is None
+    assert detector.scene_debug is not None and detector.scene_debug["valid"] is True
+    assert residual.bbox.iou(expected) >= 0.75
+    assert residual.alignment_score == 1.0
+
+
+def test_alignable_camera_drift_without_scene_change_does_not_emit_candidate() -> None:
+    import cv2
+
+    reference, _ = _frames()
+    shifted = cv2.warpAffine(
+        reference,
+        np.asarray([[1.0, 0.0, 8.0], [0.0, 1.0, 5.0]], dtype=np.float32),
+        (reference.shape[1], reference.shape[0]),
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        alignment=AlignmentConfig(max_translation_ratio=0.20),
+        baseline_residual=BaselineResidualConfig(enabled=True),
+    )
+
+    assert detector.detect(shifted, [], timestamp_sec=0.0) == []
+    assert detector.scene_anomaly_reason is None
+
+
+def test_baseline_residual_remains_independent_when_yolo_merges_with_baseline() -> None:
+    reference, changed = _frames()
+    residual_config = BaselineResidualConfig(
+        enabled=True,
+        min_component_ratio=0.001,
+        min_component_area_px=16,
+        stable_seconds=0.0,
+        min_fill_ratio=0.5,
+    )
+    hybrid = _hybrid(
+        reference,
+        [Detection(BASELINE_BOX, 0.9, 56, "chair")],
+        baseline_residual=residual_config,
+    )
+
+    output = hybrid.detect_at(changed, ROI, timestamp_sec=0.0)
+
+    assert {item.proposal_source for item in output} == {"baseline_residual", "yolo"}
+    residual = next(item for item in output if item.proposal_source == "baseline_residual")
+    assert residual.bbox.iou(NEW_BOX) >= 0.75
+
+
+def test_baseline_residual_survives_yolo_dropout() -> None:
+    reference, changed = _frames()
+    raw_detector = _Detector([Detection(NEW_BOX, 0.9, 26, "handbag")])
+    hybrid = HybridDetector(
+        raw_detector,
+        ReferenceChangeDetector(
+            reference,
+            ROI,
+            baseline_boxes=[BASELINE_BOX],
+            baseline_residual=BaselineResidualConfig(
+                enabled=True,
+                min_component_ratio=0.001,
+                min_component_area_px=16,
+                stable_seconds=0.0,
+                min_fill_ratio=0.5,
+            ),
+        ),
+    )
+
+    first = hybrid.detect_at(changed, ROI, timestamp_sec=0.0)
+    raw_detector.detections = []
+    second = hybrid.detect_at(changed, ROI, timestamp_sec=0.2)
+
+    assert any(item.proposal_source == "baseline_residual" for item in first)
+    assert any(item.proposal_source == "baseline_residual" for item in second)
+
+
+def test_change_covering_most_of_baseline_is_not_a_new_residual_object() -> None:
+    reference, _ = _frames()
+    changed = reference.copy()
+    changed[
+        BASELINE_BOX.y1 : BASELINE_BOX.y2,
+        BASELINE_BOX.x1 : BASELINE_BOX.x2,
+    ] = 255
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        baseline_residual=BaselineResidualConfig(
+            enabled=True,
+            min_component_ratio=0.001,
+            min_component_area_px=16,
+            stable_seconds=0.0,
+            min_fill_ratio=0.35,
+            max_baseline_coverage_ratio=0.5,
+        ),
+    )
+
+    output = detector.detect(changed, [], timestamp_sec=0.0)
+
+    assert all(item.proposal_source != "baseline_residual" for item in output)
+
+
+def test_residual_straddling_multiple_baselines_remains_a_new_object() -> None:
+    reference = np.random.default_rng(31).integers(
+        0, 256, (120, 160, 3), dtype=np.uint8
+    )
+    changed = reference.copy()
+    new_box = BBox(60, 40, 100, 80)
+    changed[new_box.y1 : new_box.y2, new_box.x1 : new_box.x2] = 255
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BBox(30, 20, 80, 100), BBox(80, 20, 130, 100)],
+        baseline_residual=BaselineResidualConfig(
+            enabled=True,
+            min_component_ratio=0.001,
+            min_component_area_px=16,
+            stable_seconds=0.0,
+            min_fill_ratio=0.35,
+            max_baseline_coverage_ratio=0.3,
+        ),
+    )
+
+    output = detector.detect(changed, [], timestamp_sec=0.0)
+
+    residual = next(item for item in output if item.proposal_source == "baseline_residual")
+    assert residual.bbox.iou(new_box) >= 0.75
+
+
+def test_person_mask_blocks_baseline_residual_until_person_leaves() -> None:
+    reference, changed = _frames()
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        baseline_residual=BaselineResidualConfig(
+            enabled=True,
+            min_component_ratio=0.001,
+            min_component_area_px=16,
+            stable_seconds=0.0,
+            min_fill_ratio=0.5,
+        ),
+    )
+    person = Detection(BBox(45, 35, 95, 85), 0.9, 0, "person")
+
+    covered = detector.detect(changed, [person], timestamp_sec=0.0)
+    visible = detector.detect(changed, [], timestamp_sec=0.2)
+
+    assert all(item.proposal_source != "baseline_residual" for item in covered)
+    assert any(item.proposal_source == "baseline_residual" for item in visible)
 
 
 def test_small_stationary_change_is_exposed_only_after_extended_stability() -> None:

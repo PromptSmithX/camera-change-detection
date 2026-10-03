@@ -263,6 +263,7 @@ class EventEngine:
                     started_at_sec=timestamp_sec,
                     confidence=float(observation.detector_confidence),
                     after_bbox=observation.bbox,
+                    evidence_sources=observation.evidence_sources,
                 )
                 state = _ForgottenState(
                     event=event,
@@ -291,6 +292,9 @@ class EventEngine:
             state.confidence = max(state.confidence, float(observation.detector_confidence))
             state.event.after_bbox = observation.bbox
             state.event.confidence = state.confidence
+            state.event.evidence_sources = tuple(
+                dict.fromkeys(state.event.evidence_sources + observation.evidence_sources)
+            )
 
             if not state.candidate_created and state.eligible_seconds >= self.forgotten.candidate_seconds:
                 state.candidate_created = True
@@ -389,9 +393,20 @@ class EventEngine:
             if state is not None:
                 state.last_evidence_sec = timestamp_sec
             return actions
+        evidence_sources = (
+            set(observation.evidence_sources) | {observation.proposal_source}
+            if observation is not None
+            else set()
+        )
         if observation is not None and (
             not observation.event_candidate
-            or observation.proposal_source == "yolo_reference_change"
+            or (
+                "masked_overlap" in evidence_sources
+                and not {"reference_change", "baseline_residual", "fused"}.intersection(
+                    evidence_sources
+                )
+            )
+            or "yolo_reference_change" in evidence_sources
         ):
             # Masked-overlap evidence can support a new forgotten object, but
             # it does not establish that an existing baseline object moved.
@@ -451,12 +466,16 @@ class EventEngine:
                     before_bbox=baseline_bbox,
                     after_bbox=observation.bbox,
                     movement_outcome=MovementOutcome.RELOCATED,
+                    evidence_sources=observation.evidence_sources,
                 )
                 state = _MovedState(event=event, last_evidence_sec=timestamp_sec)
                 self._moved_states[memory.object_id] = state
             else:
                 state.event.after_bbox = observation.bbox
                 state.event.confidence = max(state.event.confidence, float(assignment_score))
+                state.event.evidence_sources = tuple(
+                    dict.fromkeys(state.event.evidence_sources + observation.evidence_sources)
+                )
 
             gap = max(0.0, timestamp_sec - state.last_evidence_sec)
             if scene_status.event_logic_enabled:

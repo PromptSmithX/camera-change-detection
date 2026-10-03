@@ -1,4 +1,4 @@
-"""Run the M4/M5 pipeline and correctness evaluation for every validation sample.
+"""Run the M4/M5 pipeline and correctness evaluation for one dataset split.
 
 Example:
     python tools/run_validation.py --config configs/m45.example.json
@@ -24,6 +24,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from change_detection.dataset.io import read_json, resolve_repo_path, sha256_file, write_json
+
+
+def _verify_test_lock(manifest_path: Path, lock_path: Path) -> None:
+    """Fail closed unless the selected test manifest matches its lock receipt."""
+
+    manifest = read_json(manifest_path)
+    lock = read_json(lock_path)
+    if not bool(manifest.get("test_locked", False)):
+        raise ValueError("Test split requires a manifest marked test_locked=true")
+    if not bool(lock.get("locked", False)):
+        raise ValueError("Test lock receipt is not marked locked=true")
+    if str(lock.get("manifest_sha256", "")) != sha256_file(manifest_path):
+        raise ValueError("Locked test manifest hash does not match its lock receipt")
+    if lock.get("dataset_version") != manifest.get("dataset_version"):
+        raise ValueError("Locked test dataset version does not match its lock receipt")
+    if lock.get("test_sha256") != manifest.get("locked_test_sha256"):
+        raise ValueError("Locked test annotation digest does not match its lock receipt")
 
 
 def _canonical_digest(value: Any) -> str:
@@ -402,7 +419,7 @@ def _evaluation_command(
         "--root",
         str(root),
         "--split",
-        "validation",
+        args.split,
         "--output",
         _relative(root, output_path),
         "--event-boundary-tolerance",
@@ -416,6 +433,8 @@ def _evaluation_command(
     ]
     if args.require_object_id:
         command.append("--require-object-id")
+    if args.split == "test":
+        command.extend(["--allow-test", "--summary-only"])
     for sample_id in ignored_sample_ids:
         command.extend(["--ignore-predictions-for", sample_id])
     return command
@@ -429,6 +448,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest",
         type=Path,
         default=Path("data/benchmark/v2/manifest.json"),
+    )
+    parser.add_argument("--split", choices=("validation", "test"), default="validation")
+    parser.add_argument(
+        "--allow-test",
+        action="store_true",
+        help="Explicitly permit a blind run of the locked test split.",
+    )
+    parser.add_argument(
+        "--test-lock",
+        type=Path,
+        default=Path("data/benchmark/v2/locked_test.json"),
+        help="Lock receipt used to verify the locked test manifest.",
     )
     parser.add_argument(
         "--output",
@@ -466,18 +497,26 @@ def main() -> int:
             args.manifest if args.manifest.is_absolute() else root / args.manifest,
             root,
         )
+        if args.split == "test":
+            if not args.allow_test:
+                raise ValueError("Test execution is opt-in; pass --allow-test explicitly")
+            lock_path = _inside_root(
+                args.test_lock if args.test_lock.is_absolute() else root / args.test_lock,
+                root,
+            )
+            _verify_test_lock(manifest_path, lock_path)
         template = read_json(config_path)
         manifest = read_json(manifest_path)
         samples = [
             item
             for item in manifest.get("samples", [])
-            if str(item.get("split", "")) == "validation"
+            if str(item.get("split", "")) == args.split
         ]
         if not samples:
-            raise ValueError("Manifest has no validation samples")
+            raise ValueError(f"Manifest has no samples in split={args.split!r}")
         sample_ids = [_safe_sample_id(sample) for sample in samples]
         if len(set(sample_ids)) != len(sample_ids):
-            raise ValueError("Manifest contains duplicate video_id values in validation split")
+            raise ValueError(f"Manifest contains duplicate video_id values in {args.split} split")
 
         annotations: dict[str, dict[str, Any]] = {}
         sample_fingerprints: dict[str, str] = {}
@@ -520,13 +559,14 @@ def main() -> int:
                 "template_sha256": template_sha256,
                 "pipeline_sha256": pipeline_sha256,
                 "evaluation": evaluation_options,
+                "split": args.split,
                 "samples": sample_fingerprints,
             }
         )
 
         if args.output is None:
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            run_root = root / "runs" / "validation" / f"{config_path.stem}_all_{timestamp}"
+            run_root = root / "runs" / args.split / f"{config_path.stem}_all_{timestamp}"
         else:
             run_root = args.output if args.output.is_absolute() else root / args.output
         run_root = _inside_root(run_root, root)
@@ -560,7 +600,7 @@ def main() -> int:
                 "interpreter": sys.executable,
                 "manifest": _relative(root, manifest_path),
                 "base_config": _relative(root, config_path),
-                "split": "validation",
+                "split": args.split,
                 "sample_count": len(samples),
                 "annotation_policy": "Benchmark annotations are evaluated as stored; this tool does not edit labels.",
                 "evaluation": evaluation_options,
@@ -577,7 +617,8 @@ def main() -> int:
         for index, sample in enumerate(samples, start=1):
             sample_id = _safe_sample_id(sample)
             entry = state["samples"][sample_id]
-            print(f"[{index}/{len(samples)}] {sample_id}", flush=True)
+            label = sample_id if args.split == "validation" else "blind sample"
+            print(f"[{index}/{len(samples)}] {label}", flush=True)
             try:
                 _, baseline_dir, prediction_dir = _build_sample_config(
                     root, run_root, sample, annotations[sample_id], template
@@ -606,7 +647,10 @@ def main() -> int:
                     template=template,
                     state=state,
                 )
-                print(f"  {entry.get('status')}: {entry.get('error') or 'done'}", flush=True)
+                if args.split == "test":
+                    print(f"  {entry.get('status')}", flush=True)
+                else:
+                    print(f"  {entry.get('status')}: {entry.get('error') or 'done'}", flush=True)
             except Exception as exc:  # keep the batch moving and report this sample
                 entry.update(
                     {
@@ -616,7 +660,10 @@ def main() -> int:
                     }
                 )
                 _atomic_json(status_path, state)
-                print(f"  failed: {type(exc).__name__}: {exc}", flush=True)
+                if args.split == "test":
+                    print("  failed; details are sealed in the run status", flush=True)
+                else:
+                    print(f"  failed: {type(exc).__name__}: {exc}", flush=True)
 
         report_path = run_root / "metrics" / "evaluation.json"
         ignored_sample_ids = [
@@ -654,17 +701,19 @@ def main() -> int:
         summary = {
             "run_id": state["run_id"],
             "run_fingerprint": run_fingerprint,
-            "split": "validation",
+            "split": args.split,
             "sample_count": len(samples),
             "completed_count": len(samples) - len(failed),
             "failed_count": len(failed),
-            "failed_samples": failed,
+            "failed_samples": failed if args.split == "validation" else [],
             "evaluation_failures": report_failures,
             "evaluation_reports": evaluation_states,
             "latency_deadlines_seconds": list(deadlines),
             "annotation_policy": state.get("annotation_policy"),
             "finished_at_utc": _utc_now(),
         }
+        if args.split == "test" and code == 0 and report_path.is_file():
+            summary["metrics"] = read_json(report_path).get("overall", {})
         write_json(run_root / "summary.json", summary)
         state["finished_at_utc"] = summary["finished_at_utc"]
         state["evaluation_reports"] = evaluation_states
@@ -672,7 +721,8 @@ def main() -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 1 if failed or report_failures else 0
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        print(f"Validation batch failed: {exc}", file=sys.stderr)
+        prefix = "Blind test" if getattr(args, "split", "validation") == "test" else "Validation"
+        print(f"{prefix} batch failed: {exc}", file=sys.stderr)
         return 2
 
 

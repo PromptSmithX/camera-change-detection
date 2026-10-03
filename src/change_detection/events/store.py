@@ -70,6 +70,7 @@ class EventStore:
                 before_bbox=action.event.before_bbox,
                 after_bbox=action.event.after_bbox,
                 movement_outcome=action.event.movement_outcome,
+                evidence_sources=action.event.evidence_sources,
                 lifecycle=action.event.lifecycle,
             )
             self._active[key] = event
@@ -84,6 +85,7 @@ class EventStore:
             event = replace(
                 current,
                 ended_at_sec=action.event.ended_at_sec,
+                evidence_sources=action.event.evidence_sources,
                 lifecycle=action.event.lifecycle,
             )
             self._active.pop(key, None)

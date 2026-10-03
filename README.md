@@ -144,6 +144,22 @@ transitions. Raw embeddings are not written to run logs.
 
 ## M4/M5 event quickstart
 
+Canonical proposal consolidation is controlled by
+`perception.proposal_fusion.enabled`. It is opt-in: omitted or `false` keeps
+the legacy detector-to-tracker behavior. When enabled, YOLO, reference-change,
+and baseline-residual evidence is consolidated before ByteTrack; lineage is
+then retained in detection, observation, memory-history, and event artifacts.
+
+Run all four proposal-source ablations on validation only with:
+
+```powershell
+python tools/run_proposal_ablation.py --config configs/m45.example.json
+```
+
+The ablation command has no test-split option and writes
+`ablation_report.json` under `runs/validation/`. Enable fusion in the standard
+config only when `acceptance.passed` is `true`.
+
 M4/M5 consumes the schema-v2 baseline and adds the deterministic forgotten and
 moved-object FSMs. The reference configuration is
 `configs/m45.example.json`:
@@ -185,5 +201,18 @@ Pass `--output runs/validation/my-run` to choose a stable path; after an
 interruption, use the same path with `--resume`. Resume is rejected if the
 manifest, media, base config, evaluation settings, or pipeline code changed.
 
-The test split is deliberately opt-in: use the locked manifest and pass
-`--allow-test` explicitly.
+The test split is deliberately opt-in. Run it through the batch runner with
+the locked manifest; test progress hides sample identifiers and the evaluator
+emits aggregate-only metrics:
+
+```text
+python tools/run_validation.py \
+  --split test \
+  --allow-test \
+  --manifest data/benchmark/v2/manifest.locked.json \
+  --config configs/m45.example.json \
+  --output runs/test/my-run
+```
+
+Test runs may be repeated to report generalization, but test metrics must not
+be used to tune code or thresholds. Detailed diagnosis remains validation-only.

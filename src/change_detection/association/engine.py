@@ -47,7 +47,9 @@ class AssociationEngine:
         use_candidate_identity = observation.event_candidate and memory.event_candidate_bbox is not None
         identity_bbox = memory.event_candidate_bbox if use_candidate_identity else memory.last_bbox
         identity_embedding = (
-            memory.event_candidate_embedding if use_candidate_identity else memory.last_embedding
+            memory.event_candidate[InternetShortcut]
+URL=https://www.iloveimg.com/vi/thay-doi-kich-thuoc-anh/kich-thuoc-anh-png
+_embedding if use_candidate_identity else memory.last_embedding
         )
         appearance = _cosine_similarity(identity_embedding, embedding_from_value(observation.embedding))
         diagonal = max(1.0, sqrt(float(roi_bbox.width**2 + roi_bbox.height**2)))
@@ -81,6 +83,7 @@ class AssociationEngine:
         # protects against stale matches again.
         baseline_seed = memory.is_baseline and not memory.observation_history
         age = timestamp_sec - memory.last_seen_sec
+        evidence_sources = set(observation.evidence_sources) | {observation.proposal_source}
         contour_candidate = (
             observation.event_candidate
             and observation.proposal_source

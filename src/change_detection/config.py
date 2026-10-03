@@ -1037,6 +1037,7 @@ class ReferenceChangeConfig:
     min_current_edge_ratio: float = 0.0
     fusion_min_overlap_ratio: float = 0.25
     fusion_min_iou: float = 0.10
+    emit_standalone: bool = True
     small_component: SmallComponentConfig = SmallComponentConfig()
     masked_overlap: MaskedOverlapConfig = MaskedOverlapConfig()
     alignment: AlignmentConfig = AlignmentConfig()
@@ -1054,6 +1055,7 @@ class ReferenceChangeConfig:
                 "min_current_edge_ratio",
                 "fusion_min_overlap_ratio",
                 "fusion_min_iou",
+                "emit_standalone",
                 "small_component",
                 "masked_overlap",
                 "alignment",
@@ -1062,6 +1064,9 @@ class ReferenceChangeConfig:
             name=name,
         )
         raw_min_area = value.get("min_component_area_px", 64)
+        emit_standalone = value.get("emit_standalone", True)
+        if not isinstance(emit_standalone, bool):
+            raise ConfigValidationError(f"{name}.emit_standalone must be boolean")
         if isinstance(raw_min_area, bool):
             raise ConfigValidationError(
                 f"{name}.min_component_area_px must be a positive integer"
@@ -1103,6 +1108,7 @@ class ReferenceChangeConfig:
                 name=f"{name}.fusion_min_iou",
                 maximum=1.0,
             ),
+            emit_standalone=emit_standalone,
             small_component=SmallComponentConfig.from_mapping(
                 _mapping(value.get("small_component", {}), name=f"{name}.small_component")
             ),
@@ -1119,6 +1125,22 @@ class ReferenceChangeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ProposalFusionConfig:
+    """Opt-in canonical consolidation before short-term tracking."""
+
+    enabled: bool = False
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ProposalFusionConfig":
+        name = "perception.proposal_fusion"
+        _reject_unknown(value, {"enabled"}, name=name)
+        enabled = value.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError(f"{name}.enabled must be boolean")
+        return cls(enabled=enabled)
+
+
+@dataclass(frozen=True, slots=True)
 class PerceptionConfig:
     """M2 perception configuration.
 
@@ -1131,10 +1153,15 @@ class PerceptionConfig:
     tracker: TrackerConfig = TrackerConfig()
     encoder: EncoderConfig = EncoderConfig()
     reference_change: ReferenceChangeConfig = ReferenceChangeConfig()
+    proposal_fusion: ProposalFusionConfig = ProposalFusionConfig()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "PerceptionConfig":
-        _reject_unknown(value, {"enabled", "detector", "tracker", "encoder", "reference_change"}, name="perception")
+        _reject_unknown(
+            value,
+            {"enabled", "detector", "tracker", "encoder", "reference_change", "proposal_fusion"},
+            name="perception",
+        )
         enabled = value.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ConfigValidationError("perception.enabled must be boolean")
@@ -1151,6 +1178,9 @@ class PerceptionConfig:
             ),
             reference_change=ReferenceChangeConfig.from_mapping(
                 _mapping(value.get("reference_change", {}), name="perception.reference_change")
+            ),
+            proposal_fusion=ProposalFusionConfig.from_mapping(
+                _mapping(value.get("proposal_fusion", {}), name="perception.proposal_fusion")
             ),
         )
 
