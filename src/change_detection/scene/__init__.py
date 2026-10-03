@@ -9,7 +9,7 @@ from .stability import (
     StabilityState,
     StabilitySummary,
 )
-from .status import SceneStatus, SceneStatusProvider, StableSceneStatusProvider
+from .status import RegionChangeEvidence, SceneStatus, SceneStatusProvider, StableSceneStatusProvider
 
 __all__ = [
     "BBoxROI",
@@ -19,6 +19,7 @@ __all__ = [
     "CalibrationService",
     "ROI",
     "ROIError",
+    "RegionChangeEvidence",
     "SceneBaseline",
     "SceneStabilityMonitor",
     "StabilityObservation",

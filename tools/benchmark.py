@@ -22,6 +22,19 @@ from change_detection.evaluation.evaluator import EvaluationConfig, evaluate_eve
 
 def _load_events(path: Path) -> list[dict[str, Any]]:
     text = path.read_text(encoding="utf-8")
+    if path.suffix.casefold() == ".jsonl":
+        records: list[dict[str, Any]] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid event JSON at {path}:{line_number}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"Event record at {path}:{line_number} must be an object")
+            records.append(record)
+        return records
     try:
         value = json.loads(text)
     except json.JSONDecodeError:

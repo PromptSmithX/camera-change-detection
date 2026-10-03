@@ -68,6 +68,9 @@ class ForgottenEventConfig:
     min_confidence: float = 0.35
     max_centroid_jitter_ratio: float = 0.03
     max_area_change_ratio: float = 0.35
+    resolution_confirm_seconds: float = 5.0
+    occlusion_overlap_threshold: float = 0.20
+    reid_iou_threshold: float = 0.50
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any], *, name: str) -> "ForgottenEventConfig":
@@ -80,6 +83,9 @@ class ForgottenEventConfig:
                 "min_confidence",
                 "max_centroid_jitter_ratio",
                 "max_area_change_ratio",
+                "resolution_confirm_seconds",
+                "occlusion_overlap_threshold",
+                "reid_iou_threshold",
             },
             name=name,
         )
@@ -108,6 +114,21 @@ class ForgottenEventConfig:
             max_area_change_ratio=_finite_number(
                 value.get("max_area_change_ratio", 0.35),
                 name=f"{name}.max_area_change_ratio",
+                maximum=1.0,
+            ),
+            resolution_confirm_seconds=_finite_number(
+                value.get("resolution_confirm_seconds", 5.0),
+                name=f"{name}.resolution_confirm_seconds",
+                minimum=0.000001,
+            ),
+            occlusion_overlap_threshold=_finite_number(
+                value.get("occlusion_overlap_threshold", 0.20),
+                name=f"{name}.occlusion_overlap_threshold",
+                maximum=1.0,
+            ),
+            reid_iou_threshold=_finite_number(
+                value.get("reid_iou_threshold", 0.50),
+                name=f"{name}.reid_iou_threshold",
                 maximum=1.0,
             ),
         )
@@ -888,14 +909,138 @@ class SmallComponentConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AlignmentConfig:
+    """Registration limits used by baseline-residual extraction."""
+
+    min_response: float = 0.02
+    max_translation_ratio: float = 0.03
+    max_unfused_translation_ratio: float = 0.003
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "AlignmentConfig":
+        name = "perception.reference_change.alignment"
+        _reject_unknown(
+            value,
+            {"min_response", "max_translation_ratio", "max_unfused_translation_ratio"},
+            name=name,
+        )
+        parsed = cls(
+            min_response=_finite_number(
+                value.get("min_response", 0.02),
+                name=f"{name}.min_response",
+                maximum=1.0,
+            ),
+            max_translation_ratio=_finite_number(
+                value.get("max_translation_ratio", 0.03),
+                name=f"{name}.max_translation_ratio",
+                maximum=1.0,
+            ),
+            max_unfused_translation_ratio=_finite_number(
+                value.get("max_unfused_translation_ratio", 0.003),
+                name=f"{name}.max_unfused_translation_ratio",
+                maximum=1.0,
+            ),
+        )
+        if parsed.max_unfused_translation_ratio > parsed.max_translation_ratio:
+            raise ConfigValidationError(
+                f"{name}.max_unfused_translation_ratio must not exceed "
+                f"{name}.max_translation_ratio"
+            )
+        return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class BaselineResidualConfig:
+    """Detect a new object inside an otherwise masked baseline object."""
+
+    enabled: bool = True
+    min_component_ratio: float = 0.00075
+    min_component_area_px: int = 48
+    stable_seconds: float = 2.0
+    min_fill_ratio: float = 0.35
+    max_person_overlap_ratio: float = 0.10
+    max_baseline_coverage_ratio: float = 0.50
+    min_current_edge_ratio: float = 0.35
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "BaselineResidualConfig":
+        name = "perception.reference_change.baseline_residual"
+        _reject_unknown(
+            value,
+            {
+                "enabled",
+                "min_component_ratio",
+                "min_component_area_px",
+                "stable_seconds",
+                "min_fill_ratio",
+                "max_person_overlap_ratio",
+                "max_baseline_coverage_ratio",
+                "min_current_edge_ratio",
+            },
+            name=name,
+        )
+        enabled = value.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError(f"{name}.enabled must be boolean")
+        raw_min_area = value.get("min_component_area_px", 48)
+        if isinstance(raw_min_area, bool):
+            raise ConfigValidationError(f"{name}.min_component_area_px must be a positive integer")
+        try:
+            min_component_area_px = int(raw_min_area)
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                f"{name}.min_component_area_px must be a positive integer"
+            ) from exc
+        if min_component_area_px < 1:
+            raise ConfigValidationError(f"{name}.min_component_area_px must be a positive integer")
+        return cls(
+            enabled=enabled,
+            min_component_ratio=_finite_number(
+                value.get("min_component_ratio", 0.00075),
+                name=f"{name}.min_component_ratio",
+                minimum=0.000001,
+                maximum=1.0,
+            ),
+            min_component_area_px=min_component_area_px,
+            stable_seconds=_finite_number(
+                value.get("stable_seconds", 2.0),
+                name=f"{name}.stable_seconds",
+            ),
+            min_fill_ratio=_finite_number(
+                value.get("min_fill_ratio", 0.35),
+                name=f"{name}.min_fill_ratio",
+                maximum=1.0,
+            ),
+            max_person_overlap_ratio=_finite_number(
+                value.get("max_person_overlap_ratio", 0.10),
+                name=f"{name}.max_person_overlap_ratio",
+                maximum=1.0,
+            ),
+            max_baseline_coverage_ratio=_finite_number(
+                value.get("max_baseline_coverage_ratio", 0.50),
+                name=f"{name}.max_baseline_coverage_ratio",
+                maximum=1.0,
+            ),
+            min_current_edge_ratio=_finite_number(
+                value.get("min_current_edge_ratio", 0.35),
+                name=f"{name}.min_current_edge_ratio",
+                maximum=1.0,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceChangeConfig:
     min_component_ratio: float = 0.0025
     min_component_area_px: int = 64
     stable_seconds: float = 1.0
+    min_current_edge_ratio: float = 0.0
     fusion_min_overlap_ratio: float = 0.25
     fusion_min_iou: float = 0.10
     small_component: SmallComponentConfig = SmallComponentConfig()
     masked_overlap: MaskedOverlapConfig = MaskedOverlapConfig()
+    alignment: AlignmentConfig = AlignmentConfig()
+    baseline_residual: BaselineResidualConfig = BaselineResidualConfig()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ReferenceChangeConfig":
@@ -906,10 +1051,13 @@ class ReferenceChangeConfig:
                 "min_component_ratio",
                 "min_component_area_px",
                 "stable_seconds",
+                "min_current_edge_ratio",
                 "fusion_min_overlap_ratio",
                 "fusion_min_iou",
                 "small_component",
                 "masked_overlap",
+                "alignment",
+                "baseline_residual",
             },
             name=name,
         )
@@ -940,6 +1088,11 @@ class ReferenceChangeConfig:
                 value.get("stable_seconds", 1.0),
                 name=f"{name}.stable_seconds",
             ),
+            min_current_edge_ratio=_finite_number(
+                value.get("min_current_edge_ratio", 0.0),
+                name=f"{name}.min_current_edge_ratio",
+                maximum=1.0,
+            ),
             fusion_min_overlap_ratio=_finite_number(
                 value.get("fusion_min_overlap_ratio", 0.25),
                 name=f"{name}.fusion_min_overlap_ratio",
@@ -955,7 +1108,13 @@ class ReferenceChangeConfig:
             ),
             masked_overlap=MaskedOverlapConfig.from_mapping(
                 _mapping(value.get("masked_overlap", {}), name=f"{name}.masked_overlap")
-            )
+            ),
+            alignment=AlignmentConfig.from_mapping(
+                _mapping(value.get("alignment", {}), name=f"{name}.alignment")
+            ),
+            baseline_residual=BaselineResidualConfig.from_mapping(
+                _mapping(value.get("baseline_residual", {}), name=f"{name}.baseline_residual")
+            ),
         )
 
 

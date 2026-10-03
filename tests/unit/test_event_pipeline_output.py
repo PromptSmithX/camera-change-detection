@@ -110,5 +110,10 @@ def test_runner_writes_public_event_lifecycle_and_snapshots(tmp_path: Path):
     assert [item["action"] for item in lifecycle] == ["created", "confirmed"]
     assert (result.snapshots_dir / "evt-output-1_before.png").is_file()
     assert (result.snapshots_dir / "evt-output-1_after.png").is_file()
+    debug = json.loads(
+        (result.snapshots_dir / "evt-output-1_debug.json").read_text(encoding="utf-8")
+    )
+    assert debug["object_id"] == "new-1"
+    assert debug["bbox"] == [20, 15, 32, 27]
     metadata = json.loads(result.metadata_path.read_text())
     assert metadata["events"]["confirmed_count"] == 1

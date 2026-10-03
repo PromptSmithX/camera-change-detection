@@ -61,10 +61,14 @@ CANDIDATE
    │ persistent >= confirm_seconds
    ▼
 CONFIRMED
-   │ disappears / resolved
+   │ baseline restored continuously for resolution_confirm_seconds
    ▼
 CLOSED
 ```
+
+Tracker dropout or person occlusion does not close a confirmed forgotten
+event.  Resolution requires visible region evidence showing that the reference
+baseline has returned; absence of an event proposal alone is insufficient.
 
 ### 3.3 Guards
 
@@ -76,9 +80,16 @@ Không tăng confirmation timer khi:
 - observation confidence quá thấp;
 - object nằm ngoài ROI hợp lệ.
 
+Reference-change proposal cho `FORGOTTEN_OBJECT` phải biểu diễn một addition.
+Vùng chỉ mất edge/texture so với reference được xem là removal evidence và bị
+loại bằng `perception.reference_change.min_current_edge_ratio`; absolute pixel
+difference một mình không đủ để phân biệt hai trường hợp.
+
 ### 3.4 Deduplication
 
-Một `MemoryObject.object_id` chỉ có tối đa một active `FORGOTTEN_OBJECT` event.
+Một physical region chỉ có tối đa một active `FORGOTTEN_OBJECT` event. Nếu
+tracker tạo identity mới sau occlusion/dropout, identity mới được rebind vào
+event đã confirm khi IoU vượt `reid_iou_threshold`; không phát event thứ hai.
 
 ### 3.5 Suggested config
 
@@ -88,6 +99,9 @@ events:
     candidate_seconds: 1.0
     confirm_seconds: 4.0
     disappear_grace_seconds: 1.0
+    resolution_confirm_seconds: 5.0
+    occlusion_overlap_threshold: 0.20
+    reid_iou_threshold: 0.50
 ```
 
 Các giá trị chỉ là starting point, phải tune trên validation.

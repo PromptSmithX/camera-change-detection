@@ -30,22 +30,37 @@ def _cosine_similarity(left: tuple[float, ...] | None, right: tuple[float, ...] 
 class AssociationEngine:
     """Associate observations with eligible memory objects using Hungarian matching."""
 
-    def __init__(self, config: AssociationConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: AssociationConfig | None = None,
+        *,
+        event_reid_iou_threshold: float = 0.5,
+        event_reid_appearance_threshold: float = 0.75,
+        event_reid_total_threshold: float = 0.8,
+    ) -> None:
         self.config = config or AssociationConfig()
+        self.event_reid_iou_threshold = float(event_reid_iou_threshold)
+        self.event_reid_appearance_threshold = float(event_reid_appearance_threshold)
+        self.event_reid_total_threshold = float(event_reid_total_threshold)
 
     def _score(self, memory: MemoryObject, observation: Observation, roi_bbox: BBox) -> AssociationScore:
-        appearance = _cosine_similarity(memory.last_embedding, embedding_from_value(observation.embedding))
+        use_candidate_identity = observation.event_candidate and memory.event_candidate_bbox is not None
+        identity_bbox = memory.event_candidate_bbox if use_candidate_identity else memory.last_bbox
+        identity_embedding = (
+            memory.event_candidate_embedding if use_candidate_identity else memory.last_embedding
+        )
+        appearance = _cosine_similarity(identity_embedding, embedding_from_value(observation.embedding))
         diagonal = max(1.0, sqrt(float(roi_bbox.width**2 + roi_bbox.height**2)))
-        dx = observation.centroid.x - (memory.last_bbox.x1 + memory.last_bbox.x2) / 2.0
-        dy = observation.centroid.y - (memory.last_bbox.y1 + memory.last_bbox.y2) / 2.0
+        dx = observation.centroid.x - (identity_bbox.x1 + identity_bbox.x2) / 2.0
+        dy = observation.centroid.y - (identity_bbox.y1 + identity_bbox.y2) / 2.0
         spatial = max(0.0, 1.0 - sqrt(dx * dx + dy * dy) / diagonal)
-        size = min(memory.last_bbox.area, observation.bbox.area) / max(memory.last_bbox.area, observation.bbox.area)
+        size = min(identity_bbox.area, observation.bbox.area) / max(identity_bbox.area, observation.bbox.area)
         class_compatibility = (
             1.0
             if memory.detector_class_id == observation.detector_class_id
             or memory.detector_class_id == SCENE_CHANGE_CLASS_ID
             or observation.detector_class_id == SCENE_CHANGE_CLASS_ID
-            or observation.proposal_source == "fused"
+            or observation.proposal_source in {"fused", "fused_baseline_residual"}
             else 0.0
         )
         total = (
@@ -68,10 +83,29 @@ class AssociationEngine:
         age = timestamp_sec - memory.last_seen_sec
         contour_candidate = (
             observation.event_candidate
-            and observation.proposal_source in {"reference_change", "fused"}
+            and observation.proposal_source
+            in {"reference_change", "fused", "baseline_residual", "fused_baseline_residual"}
         )
+        residual_candidate = observation.proposal_source in {
+            "baseline_residual",
+            "fused_baseline_residual",
+        }
+        if memory.is_baseline and residual_candidate:
+            baseline_appearance = _cosine_similarity(
+                memory.baseline_embedding,
+                embedding_from_value(observation.embedding),
+            )
+            if baseline_appearance < 0.85:
+                return AssociationCandidate(
+                    memory.object_id,
+                    index,
+                    score,
+                    True,
+                    "baseline_residual_identity_mismatch",
+                )
         baseline_reidentified = False
         baseline_candidate_reidentified = False
+        event_candidate_reidentified = False
         if memory.is_baseline and memory.baseline_bbox is not None and age > self.config.max_reid_seconds:
             baseline_appearance = _cosine_similarity(
                 memory.baseline_embedding,
@@ -111,10 +145,37 @@ class AssociationEngine:
                     total=total,
                 )
         if (
+            contour_candidate
+            and memory.event_candidate_bbox is not None
+            and memory.event_candidate_embedding is not None
+            and memory.event_candidate_bbox.iou(observation.bbox)
+            >= self.event_reid_iou_threshold
+            and score.appearance >= self.event_reid_appearance_threshold
+            and score.total >= self.event_reid_total_threshold
+        ):
+            event_candidate_reidentified = True
+        is_person = (
+            observation.detector_class_id == 0
+            or observation.detector_class.casefold() == "person"
+        )
+        if (
+            memory.event_candidate_bbox is not None
+            and not observation.event_candidate
+            and is_person
+        ):
+            return AssociationCandidate(
+                memory.object_id,
+                index,
+                score,
+                True,
+                "identity_source_mismatch",
+            )
+        if (
             not baseline_seed
             and age > self.config.max_reid_seconds
             and not baseline_reidentified
             and not baseline_candidate_reidentified
+            and not event_candidate_reidentified
         ):
             return AssociationCandidate(memory.object_id, index, score, True, "reid_window_expired")
         if (

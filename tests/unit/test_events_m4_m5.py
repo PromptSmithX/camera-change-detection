@@ -19,7 +19,7 @@ from change_detection.domain import (
 )
 from change_detection.events import EventEngine, EventStore
 from change_detection.memory import ObjectMemory
-from change_detection.scene import SceneStatus
+from change_detection.scene import RegionChangeEvidence, SceneStatus
 
 
 ROI = BBox(0, 0, 100, 100)
@@ -54,6 +54,7 @@ def _step(
     timestamp: float,
     *,
     scene_status: SceneStatus | None = None,
+    region_evidence: RegionChangeEvidence | None = None,
 ):
     associations = AssociationEngine(AssociationConfig()).match(
         memory.objects,
@@ -69,6 +70,9 @@ def _step(
         timestamp_sec=timestamp,
         scene_status=scene_status or SceneStatus(),
         roi_bbox=ROI,
+        region_evidence_provider=(
+            (lambda _bbox: region_evidence) if region_evidence is not None else None
+        ),
     )
     results = [store.apply(action) for action in actions]
     return actions, [item for item in results if item is not None]
@@ -146,6 +150,42 @@ def test_forgotten_short_lived_object_is_cancelled():
     assert any(action.action.value == "cancelled" for action in store.lifecycle_actions)
 
 
+def test_unconfirmed_forgotten_candidate_survives_occlusion_or_residual_dropout():
+    memory = _new_object_memory()
+    engine = _engine()
+    store = EventStore()
+    bbox = BBox(40, 40, 55, 55)
+
+    first = replace(
+        _observation(1, bbox, 0.0),
+        proposal_source="baseline_residual",
+    )
+    second = replace(
+        _observation(1, bbox, 0.5),
+        proposal_source="baseline_residual",
+    )
+    resumed = replace(
+        _observation(1, bbox, 1.5),
+        proposal_source="baseline_residual",
+    )
+    _step(memory, engine, store, [first], 0.0)
+    _step(memory, engine, store, [second], 0.5)
+    _step(
+        memory,
+        engine,
+        store,
+        [],
+        1.0,
+        region_evidence=RegionChangeEvidence(0.8, 0.0, False),
+    )
+    _step(memory, engine, store, [resumed], 1.5)
+
+    assert len(store.confirmed_events) == 1
+    assert not any(
+        action.reason == "short_lived_object" for action in store.lifecycle_actions
+    )
+
+
 def test_forgotten_tracker_id_switch_does_not_duplicate_event():
     memory = _new_object_memory()
     engine = _engine()
@@ -156,6 +196,50 @@ def test_forgotten_tracker_id_switch_does_not_duplicate_event():
         _step(memory, engine, store, [_observation(tracker_id, bbox, timestamp)], timestamp)
 
     assert len(store.confirmed_events) == 1
+
+
+def test_confirmed_forgotten_event_survives_occlusion_and_fragmented_identity():
+    memory = _new_object_memory()
+    engine = _engine()
+    store = EventStore()
+    bbox = BBox(40, 40, 55, 55)
+
+    for timestamp in (0.0, 0.5, 1.0):
+        _step(memory, engine, store, [_observation(1, bbox, timestamp)], timestamp)
+    occluded = RegionChangeEvidence(0.0, 0.8, False)
+    _step(memory, engine, store, [], 1.5, region_evidence=occluded)
+    _step(memory, engine, store, [], 5.5, region_evidence=occluded)
+    _step(
+        memory,
+        engine,
+        store,
+        [_observation(21, bbox, 6.0, embedding=(0.0, 1.0))],
+        6.0,
+        region_evidence=RegionChangeEvidence(0.8, 0.0, False),
+    )
+
+    assert len(store.confirmed_events) == 1
+    assert len(store.active_events) == 1
+    assert [item.action.value for item in store.lifecycle_actions].count("confirmed") == 1
+
+
+def test_confirmed_forgotten_event_closes_only_after_baseline_is_restored():
+    memory = _new_object_memory()
+    engine = _engine()
+    store = EventStore()
+    bbox = BBox(40, 40, 55, 55)
+
+    for timestamp in (0.0, 0.5, 1.0):
+        _step(memory, engine, store, [_observation(1, bbox, timestamp)], timestamp)
+    restored = RegionChangeEvidence(0.0, 0.0, True)
+    _step(memory, engine, store, [], 1.5, region_evidence=restored)
+    _step(memory, engine, store, [], 6.4, region_evidence=restored)
+    assert len(store.active_events) == 1
+
+    _step(memory, engine, store, [], 6.5, region_evidence=restored)
+    assert store.active_events == ()
+    assert store.confirmed_events[0].ended_at_sec == 6.5
+    assert store.lifecycle_actions[-1].reason == "baseline_restored"
 
 
 def test_forgotten_low_confidence_interval_does_not_advance_timer():
@@ -292,13 +376,14 @@ def test_left_scene_requires_visible_outward_egress_evidence():
     engine = _engine()
     store = EventStore()
     old_bbox = BBox(10, 10, 20, 20)
-    edge_bbox = BBox(85, 40, 95, 50)
 
-    _step(memory, engine, store, [_observation(1, old_bbox, 0.0)], 0.0)
-    _step(memory, engine, store, [_observation(1, edge_bbox, 0.5)], 0.5)
-    _step(memory, engine, store, [], 1.0)
-    _step(memory, engine, store, [], 2.0)
-    _step(memory, engine, store, [], 3.0)
+    _step(memory, engine, store, [_observation(1, old_bbox, 0.4)], 0.4)
+    _step(memory, engine, store, [_observation(1, BBox(35, 20, 45, 30), 0.5)], 0.5)
+    _step(memory, engine, store, [_observation(1, BBox(60, 30, 70, 40), 0.6)], 0.6)
+    _step(memory, engine, store, [_observation(1, BBox(85, 40, 95, 50), 0.7)], 0.7)
+    _step(memory, engine, store, [], 0.8)
+    _step(memory, engine, store, [], 1.4)
+    _step(memory, engine, store, [], 2.4)
 
     assert len(store.confirmed_events) == 1
     assert store.confirmed_events[0].movement_outcome == MovementOutcome.LEFT_SCENE

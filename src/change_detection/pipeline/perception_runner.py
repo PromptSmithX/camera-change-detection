@@ -299,6 +299,11 @@ class PerceptionRunner:
                                 timestamp_sec=frame.timestamp_sec,
                                 scene_status=scene_status,
                                 roi_bbox=self.roi.bbox,
+                                region_evidence_provider=getattr(
+                                    self.detector,
+                                    "region_evidence",
+                                    None,
+                                ),
                             )
                             for action in actions:
                                 result = self.event_store.apply(action)
@@ -306,9 +311,25 @@ class PerceptionRunner:
                                     continue
                                 event_writer.write_lifecycle(result)
                                 if result.public_event is not None:
+                                    evidence_provider = getattr(
+                                        self.detector,
+                                        "region_evidence",
+                                        None,
+                                    )
+                                    evidence_bbox = (
+                                        result.public_event.after_bbox
+                                        or result.public_event.before_bbox
+                                    )
+                                    region_evidence = (
+                                        evidence_provider(evidence_bbox)
+                                        if callable(evidence_provider)
+                                        and evidence_bbox is not None
+                                        else None
+                                    )
                                     event_writer.write_confirmation_snapshot(
                                         result.public_event,
                                         frame.image,
+                                        region_evidence=region_evidence,
                                     )
                     if writer is None:
                         height, width = frame.image.shape[:2]
