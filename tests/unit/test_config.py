@@ -49,6 +49,9 @@ def test_event_runtime_config_round_trips_start_frame_and_warmup():
     )
     assert config.forgotten.candidate_seconds == 0.5
     assert config.forgotten.max_centroid_jitter_ratio == 0.08
+    assert config.forgotten.resolution_confirm_seconds == 5.0
+    assert config.forgotten.occlusion_overlap_threshold == 0.2
+    assert config.forgotten.reid_iou_threshold == 0.5
     assert config.moved.egress_edge_ratio == 0.2
     assert config.runtime.start_frame == 12
     assert config.runtime.warmup_seconds == 1.0
@@ -132,6 +135,7 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
                     "min_component_ratio": 0.0025,
                     "min_component_area_px": 64,
                     "stable_seconds": 1.0,
+                    "min_current_edge_ratio": 0.65,
                     "fusion_min_overlap_ratio": 0.3,
                     "fusion_min_iou": 0.15,
                     "small_component": {
@@ -150,16 +154,18 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
                     },
                     "alignment": {
                         "min_response": 0.03,
-                        "max_translation_ratio": 0.025,
+                        "max_translation_ratio": 0.04,
+                        "max_unfused_translation_ratio": 0.004,
                     },
                     "baseline_residual": {
                         "enabled": True,
-                        "min_component_ratio": 0.001,
-                        "min_component_area_px": 72,
+                        "min_component_ratio": 0.0008,
+                        "min_component_area_px": 52,
                         "stable_seconds": 2.5,
-                        "min_fill_ratio": 0.6,
-                        "max_person_overlap_ratio": 0.2,
-                        "max_baseline_coverage_ratio": 0.75,
+                        "min_fill_ratio": 0.4,
+                        "max_person_overlap_ratio": 0.08,
+                        "max_baseline_coverage_ratio": 0.55,
+                        "min_current_edge_ratio": 0.3,
                     },
                 }
             }
@@ -169,6 +175,7 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
     assert reference_change.min_component_ratio == 0.0025
     assert reference_change.min_component_area_px == 64
     assert reference_change.stable_seconds == 1.0
+    assert reference_change.min_current_edge_ratio == 0.65
     assert reference_change.fusion_min_overlap_ratio == 0.3
     assert reference_change.fusion_min_iou == 0.15
     assert reference_change.small_component.enabled is True
@@ -181,6 +188,9 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
     assert reference_change.baseline_residual.stable_seconds == 2.5
     assert reference_change.baseline_residual.max_baseline_coverage_ratio == 0.75
     assert validate_config(config.to_dict()).perception.reference_change.masked_overlap == overlap
+    assert reference_change.alignment.max_translation_ratio == 0.04
+    assert reference_change.baseline_residual.min_component_area_px == 52
+    assert validate_config(config.to_dict()).perception.reference_change.baseline_residual == reference_change.baseline_residual
 
     with pytest.raises(ConfigValidationError, match="min_changed_fraction"):
         validate_config(
@@ -208,6 +218,10 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
         )
     with pytest.raises(ConfigValidationError, match="fusion_min_iou"):
         validate_config({"perception": {"reference_change": {"fusion_min_iou": 1.1}}})
+    with pytest.raises(ConfigValidationError, match="min_current_edge_ratio"):
+        validate_config(
+            {"perception": {"reference_change": {"min_current_edge_ratio": 1.1}}}
+        )
     with pytest.raises(ConfigValidationError, match="min_component_ratio"):
         validate_config({"perception": {"reference_change": {"min_component_ratio": 0}}})
     with pytest.raises(ConfigValidationError, match="min_component_area_px"):
@@ -217,6 +231,19 @@ def test_masked_overlap_config_round_trips_and_rejects_invalid_values():
             {
                 "perception": {
                     "reference_change": {"small_component": {"min_aspect_ratio": 1.1}}
+                }
+            }
+        )
+    with pytest.raises(ConfigValidationError, match="max_unfused_translation_ratio"):
+        validate_config(
+            {
+                "perception": {
+                    "reference_change": {
+                        "alignment": {
+                            "max_translation_ratio": 0.01,
+                            "max_unfused_translation_ratio": 0.02,
+                        }
+                    }
                 }
             }
         )

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tools.benchmark import _load_events
 from tools.benchmark_dataset import aggregate_results
+
+
+def test_benchmark_loads_single_record_jsonl(tmp_path: Path) -> None:
+    predictions = tmp_path / "events.jsonl"
+    predictions.write_text('{"event_id": "evt-1"}\n', encoding="utf-8")
+
+    assert _load_events(predictions) == [{"event_id": "evt-1"}]
 
 
 def test_dataset_benchmark_aggregates_per_sample_without_cross_video_matching(tmp_path: Path):

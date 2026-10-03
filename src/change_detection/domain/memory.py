@@ -97,6 +97,9 @@ class MemoryObject:
     last_tracker_id: int | None = None
     missing_since_sec: float | None = None
     is_baseline: bool = False
+    event_candidate_bbox: BBox | None = None
+    event_candidate_embedding: Embedding | None = None
+    event_candidate_seen_sec: float | None = None
     observation_history: list[dict[str, Any]] = field(default_factory=list, repr=False)
     embedding_history: list[Embedding] = field(default_factory=list, repr=False)
 
@@ -134,9 +137,19 @@ class MemoryObject:
         observation_history_size: int,
         embedding_history_size: int,
     ) -> None:
-        self.last_bbox = observation.bbox
-        self.detector_class_id = observation.detector_class_id
-        self.detector_class = observation.detector_class
+        is_person = (
+            observation.detector_class_id == 0
+            or observation.detector_class.casefold() == "person"
+        )
+        protect_candidate_identity = (
+            self.event_candidate_bbox is not None
+            and not observation.event_candidate
+            and is_person
+        )
+        if not protect_candidate_identity:
+            self.last_bbox = observation.bbox
+            self.detector_class_id = observation.detector_class_id
+            self.detector_class = observation.detector_class
         self.last_seen_sec = observation.timestamp_sec
         self.last_tracker_id = observation.tracker_id
         self.state = ObjectState.PRESENT
@@ -144,10 +157,15 @@ class MemoryObject:
         self.observation_history.append(observation.to_dict())
         del self.observation_history[:-observation_history_size]
         embedding = embedding_from_value(observation.embedding)
-        if embedding is not None:
+        if embedding is not None and not protect_candidate_identity:
             self.last_embedding = embedding
             self.embedding_history.append(embedding)
             del self.embedding_history[:-embedding_history_size]
+        if observation.event_candidate:
+            self.event_candidate_bbox = observation.bbox
+            self.event_candidate_seen_sec = observation.timestamp_sec
+            if embedding is not None:
+                self.event_candidate_embedding = embedding
 
     def to_debug_dict(self) -> dict[str, Any]:
         return {
@@ -159,4 +177,10 @@ class MemoryObject:
             "last_tracker_id": self.last_tracker_id,
             "class_id": self.detector_class_id,
             "class_name": self.detector_class,
+            "event_candidate_bbox": (
+                self.event_candidate_bbox.to_list()
+                if self.event_candidate_bbox is not None
+                else None
+            ),
+            "event_candidate_seen_sec": self.event_candidate_seen_sec,
         }

@@ -161,12 +161,13 @@ def main() -> int:
                     config.perception.reference_change.min_component_area_px
                 ),
                 stable_seconds=config.perception.reference_change.stable_seconds,
+                min_current_edge_ratio=(
+                    config.perception.reference_change.min_current_edge_ratio
+                ),
                 small_component=config.perception.reference_change.small_component,
                 masked_overlap=config.perception.reference_change.masked_overlap,
                 alignment=config.perception.reference_change.alignment,
-                baseline_residual=(
-                    config.perception.reference_change.baseline_residual
-                ),
+                baseline_residual=config.perception.reference_change.baseline_residual,
             ),
             fusion_min_overlap_ratio=(
                 config.perception.reference_change.fusion_min_overlap_ratio
@@ -196,7 +197,10 @@ def main() -> int:
                     encoder,
                     semantic_refresh_fps=encoder_config.semantic_refresh_fps,
                 ),
-                association_engine=AssociationEngine(config.association),
+                association_engine=AssociationEngine(
+                    config.association,
+                    event_reid_iou_threshold=config.forgotten.reid_iou_threshold,
+                ),
                 object_memory=ObjectMemory(baseline.identity_objects(), config=config.memory),
                 event_engine=event_engine,
                 event_store=event_store,

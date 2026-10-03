@@ -133,44 +133,81 @@ def test_fused_candidate_keeps_class_metadata_without_fragmenting_identity():
     assert associations.matches[0].score.class_compatibility == 1.0
 
 
-def test_baseline_residual_matching_baseline_appearance_preserves_identity():
+def test_baseline_residual_requires_strong_baseline_appearance_to_keep_identity():
+    memory = _memory()
+    different = replace(
+        _observation(None, (0.0, 1.0), timestamp=0.0),
+        detector_class="scene_change",
+        detector_class_id=SCENE_CHANGE_CLASS_ID,
+        proposal_source="baseline_residual",
+        event_candidate=True,
+    )
+    different_result = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [different],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=0.0,
+    )
+    assert different_result.matches == ()
+    assert any(
+        item.reason == "baseline_residual_identity_mismatch"
+        for item in different_result.candidates
+    )
+
+    matching = replace(different, embedding=(1.0, 0.0))
+    matching_result = AssociationEngine(AssociationConfig()).match(
+        memory.objects,
+        [matching],
+        roi_bbox=BBox(0, 0, 100, 100),
+        timestamp_sec=0.0,
+    )
+    assert matching_result.matches[0].object_id == "baseline-1"
+
+
+def test_person_reusing_candidate_tracker_does_not_pollute_candidate_identity():
     memory = _memory()
     candidate = replace(
         _observation(1, (1.0, 0.0), timestamp=0.0),
         detector_class="scene_change",
         detector_class_id=SCENE_CHANGE_CLASS_ID,
+        proposal_source="reference_change",
         event_candidate=True,
-        proposal_source="baseline_residual",
     )
-    associations = AssociationEngine(AssociationConfig()).match(
-        memory.objects,
-        [candidate],
-        roi_bbox=BBox(0, 0, 100, 100),
-        timestamp_sec=0.0,
+    first = _update(memory, [candidate], 0.0)
+    candidate_id = first.assignments[0].object_id
+    person = replace(
+        _observation(1, (0.0, 1.0), timestamp=0.2),
+        detector_class="person",
+        detector_class_id=0,
+        event_candidate=False,
+        proposal_source="yolo",
     )
+    second = _update(memory, [person], 0.2)
 
-    assert len(associations.matches) == 1
-    assert associations.matches[0].object_id == "baseline-1"
+    assert second.assignments[0].object_id != candidate_id
+    original = next(item for item in memory.objects if item.object_id == candidate_id)
+    assert original.detector_class == "scene_change"
+    assert original.event_candidate_embedding == (1.0, 0.0)
 
 
-def test_baseline_residual_with_different_appearance_is_a_new_object():
-    memory = _memory()
-    candidate = replace(
-        _observation(1, (0.0, 1.0), timestamp=0.0),
-        detector_class="scene_change",
-        detector_class_id=SCENE_CHANGE_CLASS_ID,
+def test_stationary_event_candidate_reidentifies_after_generic_timeout():
+    ids = iter(("candidate-1", "candidate-2"))
+    memory = ObjectMemory(id_factory=lambda: next(ids))
+    first_observation = replace(
+        _observation(1, (1.0, 0.0), timestamp=0.0),
+        proposal_source="reference_change",
         event_candidate=True,
-        proposal_source="baseline_residual",
     )
-    associations = AssociationEngine(AssociationConfig()).match(
-        memory.objects,
-        [candidate],
-        roi_bbox=BBox(0, 0, 100, 100),
-        timestamp_sec=0.0,
+    first = _update(memory, [first_observation], 0.0)
+    second_observation = replace(
+        _observation(21, (1.0, 0.0), timestamp=5.0),
+        proposal_source="reference_change",
+        event_candidate=True,
     )
+    second = _update(memory, [second_observation], 5.0)
 
-    assert associations.matches == ()
-    assert associations.candidates[0].reason == "appearance_below_threshold"
+    assert second.assignments[0].object_id == first.assignments[0].object_id
+    assert second.assignments[0].match_kind == "association"
 
 
 class _FakeDino:

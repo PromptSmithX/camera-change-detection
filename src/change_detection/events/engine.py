@@ -21,7 +21,7 @@ from change_detection.domain import (
     ObjectState,
 )
 from change_detection.memory import MemoryUpdateResult, ObjectMemory
-from change_detection.scene import SceneStatus
+from change_detection.scene import RegionChangeEvidence, SceneStatus
 
 
 def _center(bbox: BBox) -> tuple[float, float]:
@@ -135,6 +135,8 @@ class _ForgottenState:
     candidate_created: bool = False
     confirmed: bool = False
     confidence: float = 0.0
+    resolution_started_sec: float | None = None
+    proposal_source: str = "yolo"
 
 
 @dataclass(slots=True)
@@ -192,6 +194,33 @@ class EventEngine:
             <= self.forgotten.max_area_change_ratio
         )
 
+    def _rebind_confirmed_forgotten_states(
+        self,
+        assigned: dict[str, tuple[Observation, float | None]],
+    ) -> None:
+        """Attach a fragmented identity to an unresolved event in the same region."""
+
+        claimed: set[int] = set()
+        for object_id, (observation, _score) in assigned.items():
+            if object_id in self._forgotten_states or not observation.event_candidate:
+                continue
+            candidates: list[tuple[float, str, _ForgottenState]] = []
+            for previous_id, state in self._forgotten_states.items():
+                if not state.confirmed or id(state) in claimed:
+                    continue
+                bbox = state.event.after_bbox or state.anchor_bbox
+                overlap = bbox.iou(observation.bbox)
+                if overlap >= self.forgotten.reid_iou_threshold:
+                    candidates.append((overlap, previous_id, state))
+            if not candidates:
+                continue
+            _overlap, previous_id, state = max(candidates, key=lambda item: item[0])
+            self._forgotten_states.pop(previous_id, None)
+            self._forgotten_states[object_id] = state
+            state.last_observed_sec = observation.timestamp_sec
+            state.resolution_started_sec = None
+            claimed.add(id(state))
+
     def _update_forgotten(
         self,
         memory: MemoryObject,
@@ -200,6 +229,7 @@ class EventEngine:
         timestamp_sec: float,
         scene_status: SceneStatus,
         roi_bbox: BBox,
+        region_evidence_provider: Callable[[BBox], RegionChangeEvidence | None] | None,
     ) -> list[EventAction]:
         actions: list[EventAction] = []
         state = self._forgotten_states.get(memory.object_id)
@@ -207,7 +237,7 @@ class EventEngine:
             # A raw YOLO box (or a tracker prediction) is useful for keeping
             # identity alive, but it is not evidence for a change event and
             # must not be mistaken for disappearance either.
-            if state is not None:
+            if state is not None and not state.confirmed:
                 state.last_observed_sec = timestamp_sec
                 state.event.after_bbox = observation.bbox
             return actions
@@ -240,6 +270,7 @@ class EventEngine:
                     anchor_bbox=observation.bbox,
                     last_observed_sec=timestamp_sec,
                     confidence=float(observation.detector_confidence),
+                    proposal_source=observation.proposal_source,
                 )
                 self._forgotten_states[memory.object_id] = state
             elif not self._stable_new_object(state, observation, roi_bbox) and not state.confirmed:
@@ -257,6 +288,7 @@ class EventEngine:
             if scene_status.event_logic_enabled:
                 state.eligible_seconds += gap
             state.last_observed_sec = timestamp_sec
+            state.resolution_started_sec = None
             state.confidence = max(state.confidence, float(observation.detector_confidence))
             state.event.after_bbox = observation.bbox
             state.event.confidence = state.confidence
@@ -286,10 +318,57 @@ class EventEngine:
         if missing_duration <= self.forgotten.disappear_grace_seconds:
             return actions
         if state.confirmed:
+            evidence_bbox = state.event.after_bbox or state.anchor_bbox
+            evidence = (
+                region_evidence_provider(evidence_bbox)
+                if region_evidence_provider is not None
+                else None
+            )
+            if evidence is None:
+                state.resolution_started_sec = None
+                return actions
+            if (
+                evidence.person_overlap_ratio
+                >= self.forgotten.occlusion_overlap_threshold
+                or not evidence.baseline_restored
+            ):
+                state.resolution_started_sec = None
+                return actions
+            if state.resolution_started_sec is None:
+                state.resolution_started_sec = timestamp_sec
+                return actions
+            if (
+                timestamp_sec - state.resolution_started_sec
+                < self.forgotten.resolution_confirm_seconds
+            ):
+                return actions
             state.event.ended_at_sec = timestamp_sec
             state.event.lifecycle = EventLifecycle.CLOSED
-            actions.append(self._action(EventActionType.CLOSED, state.event, "object_disappeared"))
+            actions.append(
+                self._action(EventActionType.CLOSED, state.event, "baseline_restored")
+            )
         else:
+            evidence_bbox = state.event.after_bbox or state.anchor_bbox
+            evidence = (
+                region_evidence_provider(evidence_bbox)
+                if region_evidence_provider is not None
+                else None
+            )
+            if (
+                state.proposal_source
+                in {"baseline_residual", "fused_baseline_residual"}
+                and evidence is not None
+                and (
+                    evidence.person_overlap_ratio
+                    >= self.forgotten.occlusion_overlap_threshold
+                    or not evidence.baseline_restored
+                )
+            ):
+                # Freeze an unconfirmed candidate while the pixels still show
+                # change or a person hides the region.  Missing detector output
+                # alone is not proof that a persistent residual disappeared.
+                state.last_observed_sec = timestamp_sec
+                return actions
             actions.append(self._action(EventActionType.CANCELLED, state.event, "short_lived_object"))
         self._forgotten_states.pop(memory.object_id, None)
         return actions
@@ -472,6 +551,7 @@ class EventEngine:
         timestamp_sec: float,
         scene_status: SceneStatus,
         roi_bbox: BBox,
+        region_evidence_provider: Callable[[BBox], RegionChangeEvidence | None] | None = None,
     ) -> tuple[EventAction, ...]:
         """Advance both FSMs using one completed memory update."""
 
@@ -488,6 +568,7 @@ class EventEngine:
             (object_id, observation)
             for object_id, (observation, _score) in assigned.items()
         ]
+        self._rebind_confirmed_forgotten_states(assigned)
         actions: list[EventAction] = []
         for object_item in memory.objects:
             observation, score = assigned.get(object_item.object_id, (None, None))
@@ -511,6 +592,7 @@ class EventEngine:
                         timestamp_sec=timestamp_sec,
                         scene_status=scene_status,
                         roi_bbox=roi_bbox,
+                        region_evidence_provider=region_evidence_provider,
                     )
                 )
         self._last_timestamp_sec = timestamp_sec

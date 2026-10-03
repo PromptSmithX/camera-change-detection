@@ -7,6 +7,22 @@ from typing import Any, Protocol
 
 
 @dataclass(frozen=True, slots=True)
+class RegionChangeEvidence:
+    """Reference-change evidence measured inside one source-image bbox."""
+
+    changed_fraction: float
+    person_overlap_ratio: float
+    baseline_restored: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "changed_fraction": float(self.changed_fraction),
+            "person_overlap_ratio": float(self.person_overlap_ratio),
+            "baseline_restored": bool(self.baseline_restored),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SceneStatus:
     """Frame-level scene guard.
 

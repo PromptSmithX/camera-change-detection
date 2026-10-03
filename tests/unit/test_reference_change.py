@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import cv2
 
 from change_detection.config import (
     AlignmentConfig,
@@ -91,6 +92,68 @@ def test_person_coverage_blocks_masked_overlap_candidate() -> None:
     output = hybrid.detect_at(changed, ROI, timestamp_sec=0.0)
 
     assert all(not item.event_candidate for item in output)
+    evidence = hybrid.region_evidence(NEW_BOX)
+    assert evidence is not None
+    assert evidence.person_overlap_ratio >= 0.2
+    assert evidence.baseline_restored is False
+
+
+def test_region_evidence_recognizes_reference_restoration() -> None:
+    reference, changed = _frames()
+    hybrid = _hybrid(reference, [])
+
+    hybrid.detect_at(changed, ROI, timestamp_sec=0.0)
+    changed_evidence = hybrid.region_evidence(NEW_BOX)
+    hybrid.detect_at(reference, ROI, timestamp_sec=0.2)
+    restored_evidence = hybrid.region_evidence(NEW_BOX)
+
+    assert changed_evidence is not None
+    assert changed_evidence.baseline_restored is False
+    assert changed_evidence.changed_fraction > 0.5
+    assert restored_evidence is not None
+    assert restored_evidence.baseline_restored is True
+    assert restored_evidence.changed_fraction <= 0.05
+
+
+def test_removal_change_is_not_exposed_as_forgotten_object_addition() -> None:
+    background = np.random.default_rng(31).integers(
+        0,
+        32,
+        (120, 160, 3),
+        dtype=np.uint8,
+    )
+    reference_with_object = background.copy()
+    reference_with_object[45:80, 60:95] = 255
+    detector = ReferenceChangeDetector(
+        reference_with_object,
+        ROI,
+        stable_seconds=0.0,
+        min_current_edge_ratio=0.65,
+    )
+
+    assert detector.detect(background, [], timestamp_sec=0.0) == []
+
+
+def test_edge_ratio_filter_keeps_object_addition() -> None:
+    reference = np.random.default_rng(37).integers(
+        0,
+        32,
+        (120, 160, 3),
+        dtype=np.uint8,
+    )
+    changed = reference.copy()
+    changed[45:80, 60:95] = 255
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        stable_seconds=0.0,
+        min_current_edge_ratio=0.65,
+    )
+
+    proposals = detector.detect(changed, [], timestamp_sec=0.0)
+
+    assert len(proposals) == 1
+    assert proposals[0].bbox.iou(BBox(60, 45, 95, 80)) >= 0.5
 
 
 def test_masked_overlap_can_be_disabled_without_changing_raw_yolo_output() -> None:
@@ -446,3 +509,166 @@ def test_small_elongated_or_sparse_change_is_rejected() -> None:
         timestamp = step * 0.2
         assert elongated_detector.detect(elongated, [], timestamp_sec=timestamp) == []
         assert sparse_detector.detect(sparse, [], timestamp_sec=timestamp) == []
+
+
+def test_baseline_residual_recovers_change_hidden_inside_baseline() -> None:
+    reference, changed = _frames()
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        baseline_residual=BaselineResidualConfig(
+            stable_seconds=0.0,
+            min_current_edge_ratio=0.0,
+        ),
+    )
+
+    proposals = detector.detect(changed, [], timestamp_sec=0.0)
+
+    assert len(proposals) == 1
+    assert proposals[0].proposal_source == "baseline_residual"
+    assert proposals[0].bbox.iou(NEW_BOX) >= 0.5
+
+
+def test_baseline_residual_is_not_fused_into_covering_baseline_detection() -> None:
+    reference, changed = _frames()
+    hybrid = HybridDetector(
+        _Detector([Detection(BASELINE_BOX, 0.9, 56, "chair")]),
+        ReferenceChangeDetector(
+            reference,
+            ROI,
+            baseline_boxes=[BASELINE_BOX],
+            baseline_residual=BaselineResidualConfig(
+                stable_seconds=0.0,
+                min_current_edge_ratio=0.0,
+            ),
+        ),
+    )
+
+    output = hybrid.detect_at(changed, ROI, timestamp_sec=0.0)
+
+    assert {item.proposal_source for item in output} == {"baseline_residual", "yolo"}
+    assert next(item for item in output if item.proposal_source == "baseline_residual").bbox.iou(
+        NEW_BOX
+    ) >= 0.5
+
+
+def test_change_covering_most_of_baseline_is_not_a_residual_object() -> None:
+    reference, _changed = _frames()
+    changed = reference.copy()
+    changed[BASELINE_BOX.y1 : BASELINE_BOX.y2, BASELINE_BOX.x1 : BASELINE_BOX.x2] = 255
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        baseline_residual=BaselineResidualConfig(
+            stable_seconds=0.0,
+            min_current_edge_ratio=0.0,
+        ),
+    )
+
+    assert detector.detect(changed, [], timestamp_sec=0.0) == []
+
+
+def test_person_mask_blocks_baseline_residual() -> None:
+    reference, changed = _frames()
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        baseline_residual=BaselineResidualConfig(
+            stable_seconds=0.0,
+            min_current_edge_ratio=0.0,
+        ),
+    )
+    person = Detection(BBox(45, 35, 95, 85), 0.9, 0, "person")
+
+    assert detector.detect(changed, [person], timestamp_sec=0.0) == []
+
+
+def test_person_occlusion_does_not_restart_existing_residual_stability() -> None:
+    reference, changed = _frames()
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        baseline_residual=BaselineResidualConfig(
+            stable_seconds=2.0,
+            min_current_edge_ratio=0.0,
+        ),
+    )
+    person = Detection(BBox(45, 35, 95, 85), 0.9, 0, "person")
+
+    assert detector.detect(changed, [], timestamp_sec=0.0) == []
+    assert detector.detect(changed, [person], timestamp_sec=0.5) == []
+    assert detector.detect(changed, [person], timestamp_sec=1.0) == []
+    assert detector.detect(changed, [person], timestamp_sec=1.5) == []
+    proposals = detector.detect(changed, [], timestamp_sec=2.0)
+
+    assert len(proposals) == 1
+    assert proposals[0].proposal_source == "baseline_residual"
+
+
+def test_alignment_maps_baseline_residual_back_to_current_frame() -> None:
+    reference, changed = _frames()
+    shift_x = 4
+    shifted = cv2.warpAffine(
+        changed,
+        np.asarray([[1.0, 0.0, shift_x], [0.0, 1.0, 0.0]], dtype=np.float32),
+        (changed.shape[1], changed.shape[0]),
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    detector = ReferenceChangeDetector(
+        reference,
+        ROI,
+        baseline_boxes=[BASELINE_BOX],
+        alignment=AlignmentConfig(max_translation_ratio=0.05),
+        baseline_residual=BaselineResidualConfig(
+            stable_seconds=0.0,
+            min_current_edge_ratio=0.0,
+        ),
+    )
+
+    proposals = detector.detect(shifted, [], timestamp_sec=0.0)
+
+    expected = BBox(NEW_BOX.x1 + shift_x, NEW_BOX.y1, NEW_BOX.x2 + shift_x, NEW_BOX.y2)
+    assert len(proposals) == 1
+    assert proposals[0].proposal_source == "baseline_residual"
+    assert proposals[0].bbox.iou(expected) >= 0.8
+
+
+def test_reference_change_and_residual_duplicates_emit_one_proposal() -> None:
+    class _Changes:
+        baseline_boxes = (BASELINE_BOX,)
+
+        def detect(self, frame, detections, *, timestamp_sec):
+            del frame, detections, timestamp_sec
+            return [
+                Detection(
+                    NEW_BOX,
+                    0.8,
+                    SCENE_CHANGE_CLASS_ID,
+                    "scene_change",
+                    proposal_source="reference_change",
+                ),
+                Detection(
+                    NEW_BOX,
+                    0.7,
+                    SCENE_CHANGE_CLASS_ID,
+                    "scene_change",
+                    proposal_source="baseline_residual",
+                ),
+            ]
+
+        def masked_overlap_score(self, detection):
+            del detection
+            return None
+
+    hybrid = HybridDetector(_Detector([]), _Changes())
+
+    output = hybrid.detect_at(
+        np.zeros((120, 160, 3), dtype=np.uint8), ROI, timestamp_sec=0.0
+    )
+
+    assert len(output) == 1
+    assert output[0].proposal_source == "baseline_residual"
